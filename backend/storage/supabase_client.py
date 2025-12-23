@@ -26,12 +26,14 @@ except ImportError as e:
 
 from backend.shared.config import SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_KEY
 
-# Initialize Supabase client
-supabase: Client = None
+# Initialize Supabase clients (separate for anon and service_role)
+supabase_anon: Client = None
+supabase_service: Client = None
 
 def get_supabase_client(use_service_key: bool = False) -> Client:
     """
     Get Supabase client instance.
+    Maintains separate clients for anon and service_role keys.
     
     Args:
         use_service_key: If True, use service key (for admin operations)
@@ -39,15 +41,22 @@ def get_supabase_client(use_service_key: bool = False) -> Client:
     Returns:
         Supabase client instance
     """
-    global supabase
+    global supabase_anon, supabase_service
     
-    if supabase is None:
-        key = SUPABASE_SERVICE_KEY if use_service_key else SUPABASE_KEY
-        if not SUPABASE_URL or not key:
-            raise ValueError("Supabase URL and key must be configured. Set SUPABASE_URL and SUPABASE_KEY in .env file.")
-        supabase = create_client(SUPABASE_URL, key)
-    
-    return supabase
+    if use_service_key:
+        # Use service_role key
+        if supabase_service is None:
+            if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+                raise ValueError("Supabase URL and service key must be configured. Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env file.")
+            supabase_service = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+        return supabase_service
+    else:
+        # Use anon key
+        if supabase_anon is None:
+            if not SUPABASE_URL or not SUPABASE_KEY:
+                raise ValueError("Supabase URL and key must be configured. Set SUPABASE_URL and SUPABASE_KEY in .env file.")
+            supabase_anon = create_client(SUPABASE_URL, SUPABASE_KEY)
+        return supabase_anon
 
 def vector_search_gdd_chunks(
     query_embedding: List[float],
