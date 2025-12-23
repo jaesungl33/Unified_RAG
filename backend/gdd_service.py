@@ -269,11 +269,17 @@ def list_documents():
             try:
                 docs = list_gdd_documents_supabase()
                 if docs:
+                    print(f"Loaded {len(docs)} documents from Supabase")
                     return docs
+                else:
+                    print("Warning: Supabase returned empty list, trying local storage")
             except Exception as e:
+                import traceback
                 print(f"Warning: Failed to load from Supabase, trying local storage: {e}")
+                traceback.print_exc()
         
         # Fallback to local storage
+        print("Attempting to load from local storage...")
         markdown_docs = list_markdown_indexed_docs()
         
         documents = []
@@ -291,9 +297,12 @@ def list_documents():
                 'status': 'ready' if chunks_count > 0 else 'indexed'
             })
         
+        print(f"Loaded {len(documents)} documents from local storage")
         return documents
     except Exception as e:
+        import traceback
         print(f"Error listing documents: {e}")
+        traceback.print_exc()
         return []
 
 

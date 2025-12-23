@@ -194,6 +194,100 @@ def code_files():
         traceback.print_exc()
         return jsonify({'error': str(e), 'files': []}), 500
 
+@app.route('/api/debug/supabase', methods=['GET'])
+def debug_supabase():
+    """Diagnostic endpoint to check Supabase connection and configuration"""
+    diagnostics = {
+        'environment_variables': {},
+        'supabase_connection': {},
+        'data_access': {},
+        'errors': []
+    }
+    
+    try:
+        # Check environment variables (masked for security)
+        supabase_url = os.getenv('SUPABASE_URL')
+        supabase_key = os.getenv('SUPABASE_KEY')
+        supabase_service_key = os.getenv('SUPABASE_SERVICE_KEY')
+        
+        diagnostics['environment_variables'] = {
+            'SUPABASE_URL': supabase_url[:30] + '...' if supabase_url else 'NOT SET',
+            'SUPABASE_KEY': supabase_key[:20] + '...' if supabase_key else 'NOT SET',
+            'SUPABASE_SERVICE_KEY': 'SET' if supabase_service_key else 'NOT SET',
+            'DASHSCOPE_API_KEY': 'SET' if os.getenv('DASHSCOPE_API_KEY') else 'NOT SET'
+        }
+        
+        # Test Supabase connection
+        if supabase_url and supabase_key:
+            try:
+                from backend.storage.supabase_client import get_supabase_client, get_gdd_documents, get_code_files
+                
+                # Test anon key connection
+                client = get_supabase_client(use_service_key=False)
+                diagnostics['supabase_connection']['anon_key'] = 'SUCCESS'
+                
+                # Test data access
+                try:
+                    gdd_docs = get_gdd_documents()
+                    diagnostics['data_access']['gdd_documents'] = {
+                        'count': len(gdd_docs),
+                        'status': 'SUCCESS' if len(gdd_docs) > 0 else 'EMPTY'
+                    }
+                    if len(gdd_docs) > 0:
+                        diagnostics['data_access']['gdd_sample'] = {
+                            'doc_id': gdd_docs[0].get('doc_id'),
+                            'name': gdd_docs[0].get('name')
+                        }
+                except Exception as e:
+                    diagnostics['data_access']['gdd_documents'] = {
+                        'count': 0,
+                        'status': 'ERROR',
+                        'error': str(e)
+                    }
+                    diagnostics['errors'].append(f"GDD documents access error: {e}")
+                
+                try:
+                    code_files_list = get_code_files()
+                    diagnostics['data_access']['code_files'] = {
+                        'count': len(code_files_list),
+                        'status': 'SUCCESS' if len(code_files_list) > 0 else 'EMPTY'
+                    }
+                except Exception as e:
+                    diagnostics['data_access']['code_files'] = {
+                        'count': 0,
+                        'status': 'ERROR',
+                        'error': str(e)
+                    }
+                    diagnostics['errors'].append(f"Code files access error: {e}")
+                
+            except Exception as e:
+                diagnostics['supabase_connection']['anon_key'] = 'FAILED'
+                diagnostics['supabase_connection']['error'] = str(e)
+                diagnostics['errors'].append(f"Supabase connection error: {e}")
+        else:
+            diagnostics['supabase_connection']['status'] = 'MISSING_ENV_VARS'
+            diagnostics['errors'].append("SUPABASE_URL or SUPABASE_KEY not set")
+        
+        # Check if Supabase is being used
+        try:
+            from backend.storage.gdd_supabase_storage import USE_SUPABASE
+            diagnostics['supabase_usage'] = {
+                'USE_SUPABASE': USE_SUPABASE,
+                'status': 'ENABLED' if USE_SUPABASE else 'DISABLED'
+            }
+        except Exception as e:
+            diagnostics['supabase_usage'] = {
+                'status': 'ERROR',
+                'error': str(e)
+            }
+        
+    except Exception as e:
+        diagnostics['errors'].append(f"Diagnostic error: {e}")
+        import traceback
+        diagnostics['traceback'] = traceback.format_exc()
+    
+    return jsonify(diagnostics)
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     debug = os.getenv('FLASK_ENV') == 'development'
