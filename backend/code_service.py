@@ -753,24 +753,80 @@ def query_codebase(query: str, file_filters: list = None, selected_methods: list
         is_extract_request = any(kw in lower_q for kw in extract_keywords)
 
         if is_extract_request and file_filters and len(file_filters) == 1:
+            # Use Supabase to get full file content instead of reading from local disk
+            # This ensures it works on Render where files aren't on local disk
             try:
-                target_path = _resolve_local_code_path(file_filters[0])
-                if target_path and target_path.exists():
-                    try:
-                        code_text = target_path.read_text(encoding="utf-8")
-                    except UnicodeDecodeError:
-                        code_text = target_path.read_text(errors="replace")
-                    # Wrap full file in a single code block
-                    return {
-                        "response": f"```csharp\n{code_text}\n```",
-                        "status": "success",
-                        "source_file": str(target_path),
-                    }
-                else:
-                    # Fall back to normal RAG flow if file cannot be resolved
+                if not SUPABASE_AVAILABLE:
+                    # Fall back to normal RAG flow if Supabase not available
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning("[Code Q&A Extract Full Code] Supabase not available, falling through to RAG")
                     pass
-            except Exception:
+                else:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"[Code Q&A Extract Full Code] Getting all chunks for file: {file_filters[0]}")
+                    
+                    # Get all chunks (both method and class) for this file
+                    all_class_chunks = get_code_chunks_for_files(file_filters, chunk_type='class')
+                    all_method_chunks = get_code_chunks_for_files(file_filters, chunk_type='method')
+                    
+                    logger.info(f"[Code Q&A Extract Full Code] Found {len(all_class_chunks)} class chunks and {len(all_method_chunks)} method chunks")
+                    
+                    # Reconstruct full file from chunks
+                    # Class chunks contain the full class definition (including fields, properties, and method signatures)
+                    # Method chunks contain individual method implementations
+                    # We'll prioritize class chunks for the main structure, then add method details
+                    
+                    full_code_parts = []
+                    
+                    # Start with class chunks (they contain the class declaration and structure)
+                    for class_chunk in all_class_chunks:
+                        source_code = class_chunk.get('source_code', '')
+                        if source_code:
+                            full_code_parts.append(source_code)
+                    
+                    # If we have class chunks with source_code, use them
+                    if full_code_parts:
+                        # Combine all class chunks (usually there's only one per file)
+                        # If multiple, they might be nested classes - combine them
+                        code_text = "\n\n".join(full_code_parts)
+                        
+                        logger.info(f"[Code Q&A Extract Full Code] Reconstructed file from {len(full_code_parts)} class chunk(s), total length: {len(code_text)} chars")
+                        
+                        # Wrap full file in a single code block
+                        return {
+                            "response": f"```csharp\n{code_text}\n```",
+                            "status": "success",
+                            "source_file": file_filters[0],
+                        }
+                    elif all_method_chunks:
+                        # Fallback: if no class chunks, try to reconstruct from method chunks
+                        # This is less ideal but better than nothing
+                        method_sources = []
+                        for method_chunk in all_method_chunks:
+                            method_code = method_chunk.get('code', '') or method_chunk.get('source_code', '')
+                            if method_code:
+                                method_sources.append(method_code)
+                        
+                        if method_sources:
+                            code_text = "\n\n".join(method_sources)
+                            logger.info(f"[Code Q&A Extract Full Code] Reconstructed file from {len(method_sources)} method chunk(s), total length: {len(code_text)} chars")
+                            
+                            return {
+                                "response": f"```csharp\n{code_text}\n```",
+                                "status": "success",
+                                "source_file": file_filters[0],
+                            }
+                    
+                    # If no chunks found, log and fall through to RAG
+                    logger.warning(f"[Code Q&A Extract Full Code] No chunks found in Supabase for {file_filters[0]}, falling through to RAG")
+                    pass
+            except Exception as e:
                 # On any error, fall back to normal RAG flow
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"[Code Q&A Extract Full Code] Error extracting full code from Supabase, falling through to RAG: {e}")
                 pass
 
         # 1b) Regex-based listing of methods / variables when exactly one file is selected.
@@ -876,6 +932,7 @@ If no global variables are found in the provided class definitions, respond with
         
         if not use_rag_for_variables and single_file_selected and (is_list_methods or is_list_vars):
             # Use Supabase to get class and method chunks instead of reading from disk
+            # This ensures it works on Render where files aren't on local disk
             try:
                 if not SUPABASE_AVAILABLE:
                     # Fall through to RAG if Supabase not available
@@ -887,6 +944,9 @@ If no global variables are found in the provided class definitions, respond with
                     # Get class chunks from Supabase to extract methods and global variables
                     import logging
                     logger = logging.getLogger(__name__)
+                    logger.info(f"[Code Q&A Regex Override] Starting regex override for file: {file_filters[0]}")
+                    logger.info(f"[Code Q&A Regex Override] Query type: list_methods={is_list_methods}, list_vars={is_list_vars}")
+                    
                     class_chunks = get_code_chunks_for_files(file_filters, chunk_type='class')
                     method_chunks = get_code_chunks_for_files(file_filters, chunk_type='method')
                     
@@ -900,7 +960,7 @@ If no global variables are found in the provided class definitions, respond with
                     
                     if not class_chunks and not method_chunks:
                         # No chunks found in Supabase - fall through to RAG
-                        logger.warning(f"[Code Q&A] No chunks found in Supabase for {file_filters[0]}, falling through to RAG")
+                        logger.warning(f"[Code Q&A Regex Override] No chunks found in Supabase for {file_filters[0]}, falling through to RAG")
                         pass
                     else:
                         # Extract methods from method chunks
@@ -911,14 +971,21 @@ If no global variables are found in the provided class definitions, respond with
                                 source_code = method_chunk.get('code', '') or method_chunk.get('source_code', '')
                                 line_num = 1  # Default if we can't determine
                                 if source_code:
-                                    # Count newlines before method name (rough estimate)
-                                    lines_before = source_code.split('\n')
-                                    line_num = len(lines_before)  # Approximate
+                                    # Try to find method name in source code to get approximate line
+                                    try:
+                                        lines = source_code.split('\n')
+                                        for idx, line in enumerate(lines, 1):
+                                            if method_name in line and ('(' in line or 'void' in line or any(rt in line for rt in ['int', 'string', 'bool', 'float', 'double', 'object'])):
+                                                line_num = idx
+                                                break
+                                    except Exception:
+                                        line_num = 1
                                 
                                 methods.append({
                                     "name": method_name,
                                     "line": line_num
                                 })
+                                logger.debug(f"[Code Q&A Regex Override] Added method: {method_name} (line {line_num})")
                         
                         # Extract fields and properties from class chunks
                         for i, class_chunk in enumerate(class_chunks):
@@ -945,7 +1012,11 @@ If no global variables are found in the provided class definitions, respond with
                                     # Add methods (if not already added from method chunks)
                                     for m in parsed_methods:
                                         if not any(existing['name'] == m['name'] for existing in methods):
-                                            methods.append({"name": m['name']})
+                                            # Preserve line number from parsed method if available
+                                            methods.append({
+                                                "name": m['name'],
+                                                "line": m.get('line', 1)
+                                            })
                                     
                                     # Add fields and properties
                                     fields.extend(parsed_fields)
@@ -962,9 +1033,11 @@ If no global variables are found in the provided class definitions, respond with
                         # Only proceed if we found something (methods, fields, or properties)
                         if not (methods or fields or properties):
                             # No methods, fields, or properties found - fall through to RAG
-                            logger.warning(f"[Code Q&A] No methods/fields/properties extracted from chunks, falling through to RAG")
+                            logger.warning(f"[Code Q&A Regex Override] No methods/fields/properties extracted from chunks, falling through to RAG")
+                            logger.warning(f"[Code Q&A Regex Override] This might indicate: 1) Chunks have empty source_code, 2) Regex parsing failed, 3) File has no methods/fields/properties")
                             pass
                         else:
+                            logger.info(f"[Code Q&A Regex Override] Successfully extracted symbols - proceeding with regex override (NOT falling through to RAG)")
                             method_names = [m["name"] for m in methods]
                             requested_methods = extract_method_names_from_query(cleaned_query, method_names)
                             
@@ -996,7 +1069,8 @@ If no global variables are found in the provided class definitions, respond with
                                     # Update cleaned_query and set flag to skip return and use RAG
                                     cleaned_query = enhanced_query
                                     use_rag_for_variables = True
-                                    pass  # Continue to check flag after try block
+                                    # Flag is set - code will fall through to RAG section after try block
+                                    # The else block below won't execute because we're inside if is_list_vars
 
                                 # CASE 2: Show UI if we have methods OR global variables (fields/properties)
                                 # This ensures UI shows even if only methods exist (no class chunks) or only global variables exist (no methods)
