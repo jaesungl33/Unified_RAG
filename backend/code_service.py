@@ -9,13 +9,256 @@ import time
 import re
 import json
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from openai import OpenAI
 
 # Add project root to path for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# Codebase root (for resolving files from Supabase paths)
+CODEBASE_ROOT = PROJECT_ROOT.parent / "codebase_RAG"
+
+
+def _resolve_local_code_path(supabase_path: str) -> Optional[Path]:
+    """
+    Resolve a Supabase-stored Windows-style path to a local path in the repo.
+    
+    Supabase stores absolute Windows paths like:
+    c:\\users\\...\\codebase_rag\\tank_online_1-dev\\Assets\\...
+    
+    We map anything after 'codebase_rag/' onto CODEBASE_ROOT so this works
+    both locally and on Render (where the repo is checked in).
+    """
+    if not supabase_path:
+        return None
+    try:
+        p_norm = str(supabase_path).replace("\\", "/")
+        lower = p_norm.lower()
+        marker = "codebase_rag/"
+        idx = lower.find(marker)
+        if idx != -1:
+            # Portion after codebase_rag/ → relative to CODEBASE_ROOT
+            rel = p_norm[idx + len(marker):]
+            local_path = (CODEBASE_ROOT / rel).resolve()
+            if local_path.exists():
+                return local_path
+        else:
+            # Treat as relative to CODEBASE_ROOT (may include subdirectories)
+            candidate = (CODEBASE_ROOT / p_norm).resolve()
+            if candidate.exists():
+                return candidate
+
+        # If we only have a bare filename (e.g. GameManager.cs), search for it
+        if "/" not in p_norm and "\\" not in p_norm:
+            for found in CODEBASE_ROOT.rglob(p_norm):
+                if found.is_file():
+                    return found.resolve()
+
+        return None
+    except Exception:
+        return None
+
+
+def _analyze_csharp_file_symbols(code_text: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Analyze a C# file and extract methods, fields, and properties.
+    Lightweight regex-based parser; good enough for listing names and locations.
+    """
+    methods: List[Dict[str, Any]] = []
+    fields: List[Dict[str, Any]] = []
+    properties: List[Dict[str, Any]] = []
+
+    # Precompute line offsets for line numbers
+    line_starts = [0]
+    for m in re.finditer(r"\n", code_text):
+        line_starts.append(m.end())
+
+    def _line_number_for_pos(pos: int) -> int:
+        # Binary search for line number
+        import bisect
+        return bisect.bisect_right(line_starts, pos)
+
+    # Improved C# method pattern (attributes + optional modifiers + return type + name + params).
+    # We no longer require the '{' on the same line so that styles like:
+    #   protected override void Awake()
+    #   {
+    #   }
+    # are still detected. Control-flow constructs (if/for/while/catch) don't match this
+    # because they don't have a return type before the name.
+    method_pattern = re.compile(
+        r'^[ \t]*(?:\[[^\]]+\]\s*)*'                         # attributes
+        r'(?:public|private|protected|internal)?\s*'
+        r'(?:(?:static|async|override|virtual|abstract|sealed|partial|extern|unsafe|new)\s+)*'
+        r'(?:void|[\w<>\[\],]+)\s+'                          # return type
+        r'(?P<name>\w+)\s*'                                  # method name
+        r'\([^)]*\)\s*'                                      # parameters
+        r'(?:where\s+\w+\s*:\s*[^{=>]+)?\s*'                 # generic constraints
+        r'(?:\{|=>)',                                        # block or expression-bodied
+        re.MULTILINE
+    )
+
+    # Field pattern: attributes + optional access + type + name;
+    # Made more flexible to handle various field declarations
+    # Must have at least one modifier (access or static/const/readonly) to avoid false positives
+    field_pattern = re.compile(
+        r'^[ \t]*(?:\[[^\]]*\]\s*)*'                          # attributes
+        r'(?:(?:public|private|protected|internal)\s+)?'        # optional access modifier
+        r'(?:(?:static|const|readonly)\s+)?'                  # optional modifiers
+        r'[\w<>\[\],\s]+\s+'                                   # type (must be present)
+        r'(?P<name>\w+)\s*'                                    # field name
+        r'(?:=[^;]*)?;',                                       # optional initializer
+        re.MULTILINE
+    )
+
+    # Property pattern: attributes + access + type + name { get; ... } or => expression
+    # Handles both traditional properties and expression-bodied properties
+    property_pattern = re.compile(
+        r'^[ \t]*(?:\[[^\]]*\]\s*)*'                          # attributes
+        r'(?:public|private|protected|internal)?\s*'            # optional access modifier
+        r'(?:static|virtual|override|sealed|abstract)?\s*'   # optional modifiers
+        r'[\w<>\[\],\s]+\s+'                                   # return type
+        r'(?P<name>\w+)\s*'                                    # property name
+        r'(?:\{[^\}]*\}|=>[^;]+)',                            # { get; set; } or => expression
+        re.MULTILINE
+    )
+
+    for match in method_pattern.finditer(code_text):
+        name = match.group("name")
+        start = match.start()
+        line_no = _line_number_for_pos(start)
+        signature = match.group(0).strip()
+        methods.append({
+            "name": name,
+            "line": line_no,
+            "signature": signature,
+        })
+
+    for match in field_pattern.finditer(code_text):
+        name = match.group("name")
+        start = match.start()
+        line_no = _line_number_for_pos(start)
+        decl = match.group(0).strip()
+        fields.append({
+            "name": name,
+            "line": line_no,
+            "declaration": decl,
+        })
+
+    for match in property_pattern.finditer(code_text):
+        name = match.group("name")
+        start = match.start()
+        line_no = _line_number_for_pos(start)
+        decl = match.group(0).strip()
+        properties.append({
+            "name": name,
+            "line": line_no,
+            "declaration": decl,
+        })
+
+    return methods, fields, properties
+
+
+def _extract_variables_from_methods(code_text: str, methods: List[Dict[str, Any]], selected_method_names: List[str]) -> List[Dict[str, Any]]:
+    """
+    Extract variables (local variables, parameters) from specific method bodies.
+    
+    Args:
+        code_text: Full source code text
+        methods: List of method dicts with 'name', 'line', 'signature'
+        selected_method_names: List of method names to extract variables from
+    
+    Returns:
+        List of variable dicts with 'name', 'line', 'method', 'declaration'
+    """
+    variables = []
+    
+    # Precompute line offsets
+    line_starts = [0]
+    for m in re.finditer(r"\n", code_text):
+        line_starts.append(m.end())
+    
+    def _line_number_for_pos(pos: int) -> int:
+        import bisect
+        return bisect.bisect_right(line_starts, pos)
+    
+    # Find method bodies for selected methods
+    method_pattern = re.compile(
+        r'^[ \t]*(?:\[[^\]]+\]\s*)*'
+        r'(?:public|private|protected|internal)?\s*'
+        r'(?:(?:static|async|override|virtual|abstract|sealed|partial|extern|unsafe|new)\s+)*'
+        r'(?:void|[\w<>\[\],]+)\s+'
+        r'(?P<name>\w+)\s*'
+        r'\([^)]*\)\s*'
+        r'(?:where\s+\w+\s*:\s*[^{=>]+)?\s*'
+        r'(?:\{|=>)',
+        re.MULTILINE
+    )
+    
+    # Pattern for local variable declarations within method bodies
+    # Matches: type name; or type name = value;
+    local_var_pattern = re.compile(
+        r'^\s*(?:\[[^\]]*\]\s*)*'
+        r'(?:var|[\w<>\[\],\s]+)\s+'
+        r'(?P<name>\w+)\s*'
+        r'(?:=[^;]*)?;',
+        re.MULTILINE
+    )
+    
+    # Find all methods and their positions
+    method_matches = []
+    for match in method_pattern.finditer(code_text):
+        method_name = match.group("name")
+        if method_name in selected_method_names:
+            method_start = match.start()
+            method_end = match.end()
+            
+            # Find the method body (from opening brace to matching closing brace)
+            brace_count = 0
+            body_start = None
+            body_end = None
+            
+            # Find opening brace
+            for i in range(method_end, len(code_text)):
+                if code_text[i] == '{':
+                    if body_start is None:
+                        body_start = i + 1
+                    brace_count += 1
+                    break
+                elif code_text[i] == '}':
+                    # Method might be expression-bodied (=>)
+                    break
+            
+            if body_start is not None:
+                # Find matching closing brace
+                for i in range(body_start, len(code_text)):
+                    if code_text[i] == '{':
+                        brace_count += 1
+                    elif code_text[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            body_end = i
+                            break
+                
+                if body_end is not None:
+                    method_body = code_text[body_start:body_end]
+                    
+                    # Extract local variables from method body
+                    for var_match in local_var_pattern.finditer(method_body):
+                        var_name = var_match.group("name")
+                        var_start = body_start + var_match.start()
+                        var_line = _line_number_for_pos(var_start)
+                        var_decl = var_match.group(0).strip()
+                        
+                        variables.append({
+                            "name": var_name,
+                            "line": var_line,
+                            "method": method_name,
+                            "declaration": var_decl,
+                        })
+    
+    return variables
 
 # Import prompts (now included in unified_rag_app)
 try:
@@ -260,7 +503,8 @@ def _filter_chunks_by_files(chunks: List[Dict], allowed_paths: Optional[List[str
 def generate_context_supabase(
     query: str,
     file_filters: Optional[List[str]] = None,
-    provider = None
+    provider = None,
+    prioritize_class_chunks: bool = False
 ) -> tuple[str, Dict]:
     """
     Generate context from Supabase using vector search and HYDE v2.
@@ -372,23 +616,81 @@ def generate_context_supabase(
     class_docs = _filter_chunks_by_files(final_classes, file_filters)
     logger.info(f"[Code Q&A] After filtering - methods: {len(method_docs)}, classes: {len(class_docs)}")
     
+    # If prioritizing class chunks (e.g., for global variables), get ALL class chunks directly
+    if prioritize_class_chunks and file_filters:
+        logger.info("[Code Q&A] Prioritizing class chunks - retrieving all class chunks for file(s)")
+        direct_class_chunks = get_code_chunks_for_files(file_filters, chunk_type='class')
+        logger.info(f"[Code Q&A] Direct lookup found {len(direct_class_chunks)} class chunks")
+        
+        # Log details about retrieved chunks
+        for i, chunk in enumerate(direct_class_chunks):
+            source_code_len = len(chunk.get('source_code', ''))
+            class_name = chunk.get('class_name', 'unknown')
+            file_path = chunk.get('file_path', 'unknown')
+            logger.info(f"[Code Q&A] Class chunk {i+1}: {class_name} from {file_path}, source_code length: {source_code_len}")
+            if source_code_len == 0:
+                logger.warning(f"[Code Q&A] WARNING: Class chunk {i+1} has empty source_code!")
+            elif source_code_len < 100:
+                logger.warning(f"[Code Q&A] WARNING: Class chunk {i+1} has very short source_code ({source_code_len} chars) - might be truncated")
+        
+        # Deduplicate by ID
+        class_dict = {chunk.get('id'): chunk for chunk in class_docs}
+        for chunk in direct_class_chunks:
+            chunk_id = chunk.get('id')
+            if chunk_id and chunk_id not in class_dict:
+                class_dict[chunk_id] = chunk
+        class_docs = list(class_dict.values())
+        logger.info(f"[Code Q&A] Retrieved {len(class_docs)} total class chunks (including direct lookup)")
+        
+        # Final check: ensure we have class chunks with source_code
+        valid_class_docs = [chunk for chunk in class_docs if chunk.get('source_code', '').strip()]
+        if len(valid_class_docs) < len(class_docs):
+            logger.warning(f"[Code Q&A] WARNING: {len(class_docs) - len(valid_class_docs)} class chunks have empty source_code!")
+        
+        # If no valid class chunks found, log error (no local disk fallback - must use Supabase)
+        if len(valid_class_docs) == 0 and file_filters:
+            logger.error(f"[Code Q&A] ERROR: No class chunks found in Supabase for file(s): {file_filters}")
+            logger.error("[Code Q&A] These files may not be indexed. Please ensure all files are indexed in Supabase.")
+        
+        class_docs = valid_class_docs
+    
     search_time = time.time() - search_start
     timing_info["vector_search_time"] = round(search_time, 2)
     
-    # Step 6: Combine top results
-    top_3_methods = method_docs[:3]
+    # Step 6: Combine results
+    # If prioritizing class chunks, include ALL class chunks, otherwise limit to top 3
+    if prioritize_class_chunks:
+        # Include all class chunks for global variable extraction
+        top_methods = method_docs[:1] if method_docs else []  # Minimal methods
+        all_classes = class_docs  # ALL class chunks
+    else:
+        top_methods = method_docs[:3]
+        all_classes = class_docs[:3]
+    
     methods_combined = "\n\n".join(
         f"File: {doc['file_path']}\nCode:\n{doc.get('code', doc.get('source_code', ''))}"
-        for doc in top_3_methods
+        for doc in top_methods
     )
     
-    top_3_classes = class_docs[:3]
     classes_combined = "\n\n".join(
-        f"File: {doc['file_path']}\nClass Info:\n{doc.get('source_code', '')} References: \n{doc.get('code_references', '')}  \n END OF ROW {i}"
-        for i, doc in enumerate(top_3_classes)
+        f"File: {doc['file_path']}\nClass: {doc.get('class_name', 'Unknown')}\nClass Info:\n{doc.get('source_code', '')} References: \n{doc.get('code_references', '')}  \n END OF ROW {i}"
+        for i, doc in enumerate(all_classes)
     )
     
-    final_context = methods_combined + "\n below is class or constructor related code \n" + classes_combined
+    # Log context summary for debugging
+    if prioritize_class_chunks:
+        logger.info(f"[Code Q&A] Context for global variables: {len(all_classes)} class chunks, total context length: {len(classes_combined)}")
+        if len(classes_combined.strip()) == 0:
+            logger.error("[Code Q&A] ERROR: Class context is empty! Cannot extract global variables.")
+        else:
+            # Log first 500 chars of context to verify it contains class definitions
+            logger.info(f"[Code Q&A] Context preview (first 500 chars): {classes_combined[:500]}")
+    
+    if prioritize_class_chunks:
+        # Prioritize class chunks when extracting global variables
+        final_context = classes_combined + "\n\n" + (methods_combined if methods_combined else "")
+    else:
+        final_context = methods_combined + "\n below is class or constructor related code \n" + classes_combined
     logger.info(f"[Code Q&A] Final context length: {len(final_context)} characters")
     if len(final_context.strip()) == 0:
         logger.warning("[Code Q&A] WARNING: Final context is empty! No code chunks retrieved.")
@@ -401,13 +703,22 @@ def generate_context_supabase(
     return final_context, timing_info
 
 
-def query_codebase(query: str, file_filters: list = None):
+def extract_method_names_from_query(query: str, known_methods: List[str]) -> List[str]:
+                        q = query.lower()
+                        matched = []
+                        for m in known_methods:
+                            if re.search(rf'\b{re.escape(m.lower())}\b', q):
+                                matched.append(m)
+                        return matched
+
+def query_codebase(query: str, file_filters: list = None, selected_methods: list = None):
     """
     Query codebase using RAG with Supabase.
     
     Args:
         query: User query string
         file_filters: Optional list of file paths to filter by
+        selected_methods: Optional list of method names to extract variables from (for "list all variables")
     
     Returns:
         dict: Response with answer and metadata
@@ -422,7 +733,366 @@ def query_codebase(query: str, file_filters: list = None):
         # Parse @filename.cs filters from query
         cleaned_query, cs_file_filters = parse_cs_file_filter(query)
         file_filters = file_filters or cs_file_filters
+
+        # Detect "extract full code" intent – skip LLM and return raw file code.
+        # This triggers when:
+        # - The user mentions extracting or showing code/chunk/file
+        # - There is exactly one file filter selected
+        extract_keywords = [
+            "extract code chunk",
+            "extract entire code",
+            "extract full code",
+            "extract full file",
+            "show full code",
+            "show entire file",
+            "paste full code",
+            "give full code",
+            "show entire code chunk",
+        ]
+        lower_q = cleaned_query.lower()
+        is_extract_request = any(kw in lower_q for kw in extract_keywords)
+
+        if is_extract_request and file_filters and len(file_filters) == 1:
+            try:
+                target_path = _resolve_local_code_path(file_filters[0])
+                if target_path and target_path.exists():
+                    try:
+                        code_text = target_path.read_text(encoding="utf-8")
+                    except UnicodeDecodeError:
+                        code_text = target_path.read_text(errors="replace")
+                    # Wrap full file in a single code block
+                    return {
+                        "response": f"```csharp\n{code_text}\n```",
+                        "status": "success",
+                        "source_file": str(target_path),
+                    }
+                else:
+                    # Fall back to normal RAG flow if file cannot be resolved
+                    pass
+            except Exception:
+                # On any error, fall back to normal RAG flow
+                pass
+
+        # 1b) Regex-based listing of methods / variables when exactly one file is selected.
+        # This overrides RAG for deterministic answers.
+        list_methods_keywords = [
+            "list all methods",
+            "list all functions",
+            "what are the methods",
+            "what are the functions",
+        ]
+        list_vars_keywords = [
+            "list all variables",
+            "list all fields",
+            "list all properties",
+            "what are the variables",
+            "what are the fields",
+            "what are the properties",
+        ]
+
+        is_list_methods = any(kw in lower_q for kw in list_methods_keywords)
+        is_list_vars = any(kw in lower_q for kw in list_vars_keywords)
+        single_file_selected = file_filters and len(file_filters) == 1
+
+        # If selected_methods is provided, use RAG instead of regex
+        # Skip regex override and go straight to RAG with enhanced query
+        use_rag_for_variables = False
+        if selected_methods and len(selected_methods) > 0 and is_list_vars:
+            # Check if global variables are requested
+            include_global = "__GLOBAL_VARIABLES__" in selected_methods
+            actual_methods = [m for m in selected_methods if m != "__GLOBAL_VARIABLES__"]
+            
+            if include_global and actual_methods:
+                # Both global vars and methods selected
+                methods_str = ", ".join(actual_methods)
+                enhanced_query = f"""Extract variables from the following methods: {methods_str}, AND extract all global/shared variables from this file.
+
+FOR METHODS ({methods_str}):
+Include: 1) Method parameters (with their types), 2) Local variables declared within the method body, 3) Class fields/properties accessed within the method.
+
+FOR GLOBAL/SHARED VARIABLES:
+INCLUDE:
+- Fields declared at class or struct scope (NOT inside any method body)
+- Static fields, instance fields, const and readonly fields
+- Properties declared at class scope
+
+EXCLUDE:
+- Local variables, method parameters, lambda locals, pattern variables
+
+EXTRACTION RULES:
+- Only return variables declared directly in a class or struct body
+- Ignore any declaration that appears between method braces {{ ... }}
+- Do NOT infer or guess
+
+Group the output by: Global Variables first, then by method name."""
+            elif include_global:
+                # Only global variables selected
+                enhanced_query = """Extract ALL global/shared variables from the class definitions provided in the context.
+
+GLOBAL/SHARED VARIABLES INCLUDE:
+- Fields declared at class or struct scope (NOT inside any method body)
+- Static fields (truly shared)
+- Instance fields (shared across methods of an instance)
+- Const and readonly fields
+- Properties declared at class scope (with { get; set; } syntax)
+
+GLOBAL/SHARED VARIABLES EXCLUDE:
+- Local variables (declared inside method bodies)
+- Method parameters
+- Lambda locals
+- Pattern variables (from pattern matching)
+- Variables declared inside nested classes (only extract from the main class in the file)
+
+EXTRACTION RULES:
+1. Only return variables declared directly in a class or struct body (between the opening { and before any method declarations)
+2. Ignore any declaration that appears between method braces { ... }
+3. Do NOT infer or guess - only extract what is explicitly declared in the class body
+4. Look for declarations that appear at the class level, before any method definitions
+5. If no global variables exist, return "No global variables found"
+
+For each global variable found, provide:
+- Variable name
+- Type (if visible)
+- Access modifier (public, private, protected, internal, etc.)
+- Modifiers (static, const, readonly, override, etc.)
+- Initial value (if present)
+
+Format the output as:
+**Fields:**
+- `variableName` (type) - access modifier, modifiers
+
+**Properties:**
+- `propertyName` (type) - access modifier, modifiers
+
+If no global variables are found in the provided class definitions, respond with: "No global variables found"."""
+            else:
+                # Only methods selected (existing logic)
+                methods_str = ", ".join(actual_methods)
+                enhanced_query = f"List all variables used in the following methods: {methods_str}. Include local variables, parameters, and any fields/properties accessed within these methods. For each variable, show its name, type (if visible), and which method it belongs to."
+            
+            cleaned_query = enhanced_query
+            use_rag_for_variables = True
+            # Skip regex override, fall through to RAG
         
+        if not use_rag_for_variables and single_file_selected and (is_list_methods or is_list_vars):
+            # Use Supabase to get class and method chunks instead of reading from disk
+            try:
+                if not SUPABASE_AVAILABLE:
+                    # Fall through to RAG if Supabase not available
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning("[Code Q&A Regex Override] Supabase not available, falling through to RAG")
+                    pass
+                else:
+                    # Get class chunks from Supabase to extract methods and global variables
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    class_chunks = get_code_chunks_for_files(file_filters, chunk_type='class')
+                    method_chunks = get_code_chunks_for_files(file_filters, chunk_type='method')
+                    
+                    logger.info(f"[Code Q&A Regex Override] Found {len(class_chunks)} class chunks and {len(method_chunks)} method chunks from Supabase")
+                    
+                    # Always try to extract methods and global variables, even if chunks are missing
+                    # This allows us to show the method selection UI with whatever we can find
+                    methods = []
+                    fields = []
+                    properties = []
+                    
+                    if not class_chunks and not method_chunks:
+                        # No chunks found in Supabase - fall through to RAG
+                        logger.warning(f"[Code Q&A] No chunks found in Supabase for {file_filters[0]}, falling through to RAG")
+                        pass
+                    else:
+                        # Extract methods from method chunks
+                        for method_chunk in method_chunks:
+                            method_name = method_chunk.get('method_name')
+                            if method_name:
+                                # Try to extract line number from source_code if available
+                                source_code = method_chunk.get('code', '') or method_chunk.get('source_code', '')
+                                line_num = 1  # Default if we can't determine
+                                if source_code:
+                                    # Count newlines before method name (rough estimate)
+                                    lines_before = source_code.split('\n')
+                                    line_num = len(lines_before)  # Approximate
+                                
+                                methods.append({
+                                    "name": method_name,
+                                    "line": line_num
+                                })
+                        
+                        # Extract fields and properties from class chunks
+                        for i, class_chunk in enumerate(class_chunks):
+                            source_code = class_chunk.get('source_code', '')
+                            class_name = class_chunk.get('class_name', 'unknown')
+                            file_path = class_chunk.get('file_path', 'unknown')
+                            logger.info(f"[Code Q&A Regex Override] Processing class chunk {i+1}/{len(class_chunks)}: {class_name} from {file_path}, source_code length: {len(source_code)}")
+                            
+                            if source_code:
+                                try:
+                                    # Parse the class source_code to extract methods, fields, properties
+                                    parsed_methods, parsed_fields, parsed_properties = _analyze_csharp_file_symbols(source_code)
+                                    
+                                    logger.info(f"[Code Q&A Regex Override] Parsed from {class_name}: {len(parsed_methods)} methods, {len(parsed_fields)} fields, {len(parsed_properties)} properties")
+                                    
+                                    # Log field and property names for debugging
+                                    if parsed_fields:
+                                        field_names = [f['name'] for f in parsed_fields]
+                                        logger.info(f"[Code Q&A Regex Override] Fields found: {field_names}")
+                                    if parsed_properties:
+                                        prop_names = [p['name'] for p in parsed_properties]
+                                        logger.info(f"[Code Q&A Regex Override] Properties found: {prop_names}")
+                                    
+                                    # Add methods (if not already added from method chunks)
+                                    for m in parsed_methods:
+                                        if not any(existing['name'] == m['name'] for existing in methods):
+                                            methods.append({"name": m['name']})
+                                    
+                                    # Add fields and properties
+                                    fields.extend(parsed_fields)
+                                    properties.extend(parsed_properties)
+                                except Exception as e:
+                                    logger.error(f"[Code Q&A Regex Override] Error parsing class chunk {class_name}: {e}")
+                                    import traceback
+                                    logger.error(f"[Code Q&A Regex Override] Traceback: {traceback.format_exc()}")
+                            else:
+                                logger.warning(f"[Code Q&A Regex Override] Class chunk {class_name} from {file_path} has empty source_code!")
+                        
+                        logger.info(f"[Code Q&A Regex Override] Final counts: {len(methods)} methods, {len(fields)} fields, {len(properties)} properties")
+                        
+                        # Only proceed if we found something (methods, fields, or properties)
+                        if not (methods or fields or properties):
+                            # No methods, fields, or properties found - fall through to RAG
+                            logger.warning(f"[Code Q&A] No methods/fields/properties extracted from chunks, falling through to RAG")
+                            pass
+                        else:
+                            method_names = [m["name"] for m in methods]
+                            requested_methods = extract_method_names_from_query(cleaned_query, method_names)
+                            
+                            lines: List[str] = []
+                            file_name = file_filters[0].split('/')[-1] if file_filters else "Unknown"
+                            lines.append(f"File: `{file_name}`")
+
+                            if is_list_methods:
+                                lines.append("\n**Methods / Functions (all detected):**")
+                                if methods:
+                                    for m in methods:
+                                        lines.append(f"- `{m['name']}` (line {m['line']})")
+                                else:
+                                    lines.append("- (no methods detected)")
+                                
+                                return {
+                                    "response": "\n".join(lines),
+                                    "status": "success",
+                                    "source_file": file_filters[0] if file_filters else None,
+                                }
+
+                            if is_list_vars:
+                                # CASE 1: User specified methods in query text → use RAG to extract variables
+                                if requested_methods:
+                                    # Construct a query that asks RAG to extract variables from specified methods
+                                    methods_str = ", ".join(requested_methods)
+                                    enhanced_query = f"List all variables, fields, and properties used in the following methods: {methods_str}. Include local variables, parameters, and any fields/properties accessed within these methods. For each variable, show its name, type (if visible), and which method it belongs to."
+                                    
+                                    # Update cleaned_query and set flag to skip return and use RAG
+                                    cleaned_query = enhanced_query
+                                    use_rag_for_variables = True
+                                    pass  # Continue to check flag after try block
+
+                                # CASE 2: Show UI if we have methods OR global variables (fields/properties)
+                                # This ensures UI shows even if only methods exist (no class chunks) or only global variables exist (no methods)
+                                elif methods or fields or properties:
+                                    # Get global variables (fields + properties)
+                                    global_vars = []
+                                    for f in fields:
+                                        global_vars.append({
+                                            "name": f['name'],
+                                            "line": f['line'],
+                                            "type": "field"
+                                        })
+                                    for p in properties:
+                                        global_vars.append({
+                                            "name": p['name'],
+                                            "line": p['line'],
+                                            "type": "property"
+                                        })
+                                    
+                                    import logging
+                                    logger = logging.getLogger(__name__)
+                                    logger.info(f"[Code Q&A Regex Override] Building UI: {len(methods)} methods, {len(global_vars)} global variables")
+                                    logger.info(f"[Code Q&A Regex Override] Fields: {len(fields)}, Properties: {len(properties)}")
+                                    
+                                    # Return special response format that triggers method selection UI
+                                    methods_list = [{"name": m["name"], "line": m["line"]} for m in methods]
+                                    
+                                    # Ensure global_variables is always a list (never None or undefined)
+                                    # Build appropriate message based on what we have
+                                    if methods and global_vars:
+                                        message = (
+                                            "You asked to list **all variables**.\n"
+                                            "This file contains methods and global variables. Please select which method(s) you want to see variables for, or select 'Global Variables' to see class-level fields and properties."
+                                        )
+                                    elif methods:
+                                        message = (
+                                            "You asked to list **all variables**.\n"
+                                            "This file contains methods. Please select which method(s) you want to see variables for."
+                                        )
+                                    elif global_vars:
+                                        message = (
+                                            "You asked to list **all variables**.\n"
+                                            "This file contains global variables (fields and properties). Please select 'Global Variables' to see them."
+                                        )
+                                    else:
+                                        message = (
+                                            "You asked to list **all variables**.\n"
+                                            "Please select which method(s) you want to see variables for."
+                                        )
+                                    
+                                    response_data = {
+                                        "response": message,
+                                        "status": "success",
+                                        "source_file": file_filters[0] if file_filters else None,
+                                        "requires_method_selection": True,
+                                        "methods": methods_list,
+                                        "global_variables": global_vars if global_vars else [],  # Always a list, never None
+                                        "file_path": file_filters[0] if file_filters else None,
+                                    }
+                                    
+                                    logger.info(f"[Code Q&A Regex Override] Response includes {len(response_data['global_variables'])} global variables")
+                                    return response_data
+                            else:
+                                # This should not happen since we check `elif methods or fields or properties`
+                                # But keep as fallback: No methods, fields, or properties in this file.
+                                # In this case, list all fields and properties directly.
+                                lines.append(
+                                    "\nThis file does not define any methods. Listing all "
+                                    "fields/variables and properties in the file instead.\n"
+                                )
+                                lines.append("\n**Fields / Variables (all detected):**")
+                                if fields:
+                                    for f in fields:
+                                        lines.append(f"- `{f['name']}`")
+                                else:
+                                    lines.append("- (no fields detected)")
+
+                                lines.append("\n**Properties (all detected):**")
+                                if properties:
+                                    for p in properties:
+                                        lines.append(f"- `{p['name']}`")
+                                else:
+                                    lines.append("- (no properties detected)")
+
+                                return {
+                                    "response": "\n".join(lines),
+                                    "status": "success",
+                                    "source_file": file_filters[0] if file_filters else None,
+                                }
+            except Exception as e:
+                # Fall through to normal RAG flow on any error
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"[Code Q&A] Error in regex override, falling through to RAG: {e}")
+                pass
+
         # Use Supabase if available
         if SUPABASE_AVAILABLE:
             try:
@@ -434,10 +1104,18 @@ def query_codebase(query: str, file_filters: list = None):
                 logger.info(f"[Code Q&A Query] Query: {cleaned_query[:100]}")
                 logger.info(f"[Code Q&A Query] File filters: {file_filters}")
                 
+                # Check if this is a global variables query
+                is_global_vars_query = (
+                    use_rag_for_variables and 
+                    selected_methods and 
+                    "__GLOBAL_VARIABLES__" in selected_methods
+                )
+                
                 context, context_timing = generate_context_supabase(
                     query=cleaned_query,
                     file_filters=file_filters,
-                    provider=provider
+                    provider=provider,
+                    prioritize_class_chunks=is_global_vars_query
                 )
                 
                 logger.info(f"[Code Q&A Query] Context retrieved: {len(context)} chars")

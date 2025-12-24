@@ -88,6 +88,9 @@ document.addEventListener('DOMContentLoaded', function() {
             removeTypingIndicator(typingIndicator);
             if (data.status === 'error') {
                 addMessage('Error: ' + (data.response || data.error || 'Query failed'), 'bot');
+            } else if (data.requires_method_selection && data.methods) {
+                // Show method selection UI
+                addMethodSelectionUI(data.response, data.methods, data.file_path, queryText || query, data.global_variables);
             } else {
                 addMessage(data.response || 'No response received', 'bot');
             }
@@ -428,6 +431,107 @@ document.addEventListener('DOMContentLoaded', function() {
     
     function removeTypingIndicator(indicator) {
         indicator.remove();
+    }
+    
+    function addMethodSelectionUI(message, methods, filePath, originalQuery, globalVariables) {
+        // Add the message first
+        addMessage(message, 'bot');
+        
+        // Build checkbox HTML with Global Variables first
+        let checkboxesHTML = '';
+        
+        // Add Global Variables option at the top if they exist
+        if (globalVariables && globalVariables.length > 0) {
+            checkboxesHTML += `
+                <label class="method-checkbox-label" style="font-weight: bold; border-bottom: 1px solid #ddd; padding-bottom: 8px; margin-bottom: 8px;">
+                    <input type="checkbox" class="method-checkbox" value="__GLOBAL_VARIABLES__" data-type="global">
+                    <span>Global Variables <span style="color: #666; font-size: 0.9em;">(${globalVariables.length} fields/properties)</span></span>
+                </label>
+            `;
+        }
+        
+        // Add methods
+        checkboxesHTML += methods.map((method, idx) => `
+            <label class="method-checkbox-label">
+                <input type="checkbox" class="method-checkbox" value="${method.name}" data-line="${method.line}" data-type="method">
+                <span>${method.name} <span style="color: #666; font-size: 0.9em;">(line ${method.line})</span></span>
+            </label>
+        `).join('');
+        
+        // Create method selection UI
+        const selectionDiv = document.createElement('div');
+        selectionDiv.className = 'message bot-message method-selection-ui';
+        selectionDiv.innerHTML = `
+            <div class="method-selection-container">
+                <p style="margin-bottom: 12px; font-weight: 500;">Select method(s) or Global Variables to view variables:</p>
+                <div class="method-checkboxes" id="method-checkboxes-${Date.now()}">
+                    ${checkboxesHTML}
+                </div>
+                <div style="margin-top: 16px;">
+                    <button class="btn-primary method-submit-btn" style="padding: 8px 16px; font-size: 0.9em;">Get Variables</button>
+                    <button class="btn-secondary method-cancel-btn" style="padding: 8px 16px; font-size: 0.9em; margin-left: 8px;">Cancel</button>
+                </div>
+            </div>
+        `;
+        
+        chatContainer.appendChild(selectionDiv);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+        
+        // Store data for submission
+        const containerId = selectionDiv.querySelector('.method-checkboxes').id;
+        const submitBtn = selectionDiv.querySelector('.method-submit-btn');
+        const cancelBtn = selectionDiv.querySelector('.method-cancel-btn');
+        
+        submitBtn.addEventListener('click', function() {
+            const checkboxes = selectionDiv.querySelectorAll('.method-checkbox:checked');
+            const selectedMethods = [];
+            
+            Array.from(checkboxes).forEach(cb => {
+                selectedMethods.push(cb.value);
+            });
+            
+            if (selectedMethods.length === 0) {
+                alert('Please select at least one method or Global Variables.');
+                return;
+            }
+            
+            // Remove the selection UI
+            selectionDiv.remove();
+            
+            // Show typing indicator
+            const typingIndicator = addTypingIndicator();
+            
+            // Send query with selected methods (including __GLOBAL_VARIABLES__ if selected)
+            fetch('/api/code/query', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    query: originalQuery,
+                    file_filters: filePath ? [filePath] : (selectedFiles.length > 0 ? selectedFiles : null),
+                    selected_methods: selectedMethods,
+                    rerank: false
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                removeTypingIndicator(typingIndicator);
+                if (data.status === 'error') {
+                    addMessage('Error: ' + (data.response || data.error || 'Query failed'), 'bot');
+                } else {
+                    addMessage(data.response || 'No response received', 'bot');
+                }
+            })
+            .catch(error => {
+                removeTypingIndicator(typingIndicator);
+                addMessage('Error: ' + error.message, 'bot');
+            });
+        });
+        
+        cancelBtn.addEventListener('click', function() {
+            selectionDiv.remove();
+        });
     }
 });
 

@@ -266,11 +266,13 @@ def code_query():
         data = request.get_json()
         query = data.get('query', '')
         file_filters = data.get('file_filters', [])
+        selected_methods = data.get('selected_methods', [])
         
         app.logger.info(f"[Code Q&A API] Received query: {query[:100]}")
         app.logger.info(f"[Code Q&A API] File filters: {file_filters}")
+        app.logger.info(f"[Code Q&A API] Selected methods: {selected_methods}")
         
-        result = query_codebase(query, file_filters=file_filters)
+        result = query_codebase(query, file_filters=file_filters, selected_methods=selected_methods)
         
         app.logger.info(f"[Code Q&A API] Response status: {result.get('status')}")
         app.logger.info(f"[Code Q&A API] Response length: {len(result.get('response', ''))}")
