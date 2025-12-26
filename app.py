@@ -443,6 +443,119 @@ def health():
     """Health check endpoint for Render"""
     return jsonify({'status': 'ok', 'service': 'unified-rag-app'}), 200
 
+@app.route('/api/requirements/extract', methods=['POST'])
+def extract_requirements():
+    """Extract requirements from a GDD document"""
+    try:
+        data = request.get_json()
+        doc_id = data.get('doc_id')
+        
+        if not doc_id:
+            return jsonify({'error': 'doc_id is required'}), 400
+        
+        app.logger.info(f"Extracting requirements from doc_id: {doc_id}")
+        
+        from gdd_rag_backbone.gdd.extraction import extract_all_requirements
+        from gdd_rag_backbone.llm_providers import QwenProvider, make_llm_model_func
+        import asyncio
+        
+        provider = QwenProvider()
+        llm_func = make_llm_model_func(provider)
+        
+        result = asyncio.run(
+            extract_all_requirements(doc_id, llm_func=llm_func)
+        )
+        
+        app.logger.info(f"Extracted {len(result.get('requirements', []))} requirements")
+        return jsonify(result)
+    except Exception as e:
+        app.logger.error(f"Error extracting requirements: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/requirements/evaluate', methods=['POST'])
+def evaluate_requirements():
+    """Evaluate requirement implementation status for a GDD document"""
+    try:
+        data = request.get_json()
+        doc_id = data.get('doc_id')
+        top_k = data.get('top_k', 12)  # Optional parameter
+        
+        if not doc_id:
+            return jsonify({'error': 'doc_id is required'}), 400
+        
+        app.logger.info(f"Evaluating requirements for doc_id: {doc_id}")
+        
+        from backend.requirement_matching_service import evaluate_all_requirements_from_doc
+        from gdd_rag_backbone.llm_providers import QwenProvider
+        import asyncio
+        
+        provider = QwenProvider()
+        
+        # Run async evaluation
+        result = asyncio.run(
+            evaluate_all_requirements_from_doc(
+                doc_id=doc_id,
+                provider=provider,
+                top_k=top_k
+            )
+        )
+        
+        app.logger.info(f"Evaluation complete. Summary: {result.get('summary', {})}")
+        return jsonify(result)
+    except Exception as e:
+        app.logger.error(f"Error evaluating requirements: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/requirements/evaluate-single', methods=['POST'])
+def evaluate_single_requirement():
+    """Evaluate a single requirement's implementation status"""
+    try:
+        data = request.get_json()
+        requirement_data = data.get('requirement')
+        top_k = data.get('top_k', 12)
+        
+        if not requirement_data:
+            return jsonify({'error': 'requirement data is required'}), 400
+        
+        from backend.requirement_matching_service import evaluate_requirement_coverage
+        from gdd_rag_backbone.gdd.schemas import GddRequirement
+        from gdd_rag_backbone.llm_providers import QwenProvider
+        import asyncio
+        
+        # Convert dict to GddRequirement object
+        req = GddRequirement(
+            id=requirement_data.get('id', ''),
+            title=requirement_data.get('title', ''),
+            description=requirement_data.get('description', ''),
+            summary=requirement_data.get('summary'),
+            category=requirement_data.get('category'),
+            priority=requirement_data.get('priority'),
+            status=requirement_data.get('status'),
+            acceptance_criteria=requirement_data.get('acceptance_criteria'),
+            related_objects=requirement_data.get('related_objects', []),
+            related_systems=requirement_data.get('related_systems', []),
+            source_note=requirement_data.get('source_note'),
+            triggers=requirement_data.get('triggers', []),
+            effects=requirement_data.get('effects', []),
+            entities_involved=requirement_data.get('entities_involved', []),
+            expected_code_anchors=requirement_data.get('expected_code_anchors', []),
+        )
+        
+        provider = QwenProvider()
+        
+        result = asyncio.run(
+            evaluate_requirement_coverage(
+                requirement=req,
+                provider=provider,
+                top_k=top_k
+            )
+        )
+        
+        return jsonify(result)
+    except Exception as e:
+        app.logger.error(f"Error evaluating single requirement: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     debug = os.getenv('FLASK_ENV') == 'development'

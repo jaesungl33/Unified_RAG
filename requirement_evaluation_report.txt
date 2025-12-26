@@ -1,0 +1,177 @@
+================================================================================
+REQUIREMENT EVALUATION REPORT
+================================================================================
+
+Document: [Character Module] [Tank War] [Elemental Class].md
+doc_id: Character_Module_Tank_War_Elemental_Class
+--------------------------------------------------------------------------------
+Total Requirements: 5
+Implemented: 0
+Partially Implemented: 2
+Not Implemented: 3
+Errors: 0
+
+Top Requirements:
+  - Phân hóa gameplay với các class khác: not_implemented
+  - Khả năng kiểm soát khu vực: partially_implemented
+  - Hỗ trợ combo hiệu ứng nguyên tố: not_implemented
+  - Độ khó sử dụng: Trung bình - Khó: not_implemented
+  - Cung cấp trải nghiệm 'cool fantasy': partially_implemented
+
+================================================================================
+
+Document: Asset_UI_Tank_War_Garage_Design_UI_UX.md
+doc_id: Asset_UI_Tank_War_Garage_Design_UI_UX
+--------------------------------------------------------------------------------
+Total Requirements: 6
+Implemented: 0
+Partially Implemented: 2
+Not Implemented: 4
+Errors: 0
+
+Top Requirements:
+  - Giao diện dễ hiểu và tiện lợi: not_implemented
+  - Cho phép nghiên cứu kỹ trước khi mua: not_implemented
+  - Thông số phải được định dạng rõ ràng: partially_implemented
+  - AI-generated decor có thể mua trong v1: partially_implemented
+  - Chuẩn bị chuyển sang hệ thống tokens cho AI gen (v2): not_implemented
+  - Danh sách tank và decor phải hỗ trợ sắp xếp: not_implemented
+
+================================================================================
+
+Document: Asset_UI_Tank_War_In_game_GUI_Design.md
+doc_id: Asset_UI_Tank_War_In_game_GUI_Design
+--------------------------------------------------------------------------------
+Total Requirements: 4
+Implemented: 0
+Partially Implemented: 1
+Not Implemented: 3
+Errors: 0
+
+Top Requirements:
+  - Thiết kế bố cục UI trận đấu: not_implemented
+  - Điền file cân bằng vào StatsShop: partially_implemented
+  - Ngăn người chơi mua nhầm skill: not_implemented
+  - Phân biệt màu máu theo phe: not_implemented
+
+================================================================================
+
+Document: Asset_UI_Tank_War_Main_Screen_Design.md
+doc_id: Asset_UI_Tank_War_Main_Screen_Design
+--------------------------------------------------------------------------------
+Total Requirements: 4
+Implemented: 0
+Partially Implemented: 1
+Not Implemented: 3
+Errors: 0
+
+Top Requirements:
+  - Thông tin chức năng phải được truyền tải rõ ràng: partially_implemented
+  - Không gây quá tải thông tin: not_implemented
+  - Liên kết giao diện Garage: not_implemented
+  - Các tính năng bổ sung sẽ hoàn thiện sau: not_implemented
+
+================================================================================
+
+Document: Asset_UI_Tank_War_Mode_Selection_Design.md
+doc_id: Asset_UI_Tank_War_Mode_Selection_Design
+--------------------------------------------------------------------------------
+Total Requirements: 3
+Implemented: 0
+Partially Implemented: 0
+Not Implemented: 3
+Errors: 0
+
+Top Requirements:
+  - Hiển thị rõ ràng các tùy chọn chế độ chơi: not_implemented
+  - Cập nhật thông tin chế độ chơi sau khi chọn: not_implemented
+  - Nút Back hoạt động đúng chức năng: not_implemented
+
+================================================================================
+
+Document: Asset_UI_Tank_War_Result_Screen_Design.md
+doc_id: Asset_UI_Tank_War_Result_Screen_Design
+--------------------------------------------------------------------------------
+Total Requirements: 3
+Implemented: 1
+Partially Implemented: 1
+Not Implemented: 1
+Errors: 0
+
+Top Requirements:
+  - Hiển thị thông tin trận đấu đầy đủ: partially_implemented
+  - Nút nhận thưởng phải hoạt động: implemented
+  - Xác định MVP tự động: not_implemented
+
+================================================================================
+
+Document: Asset_UI_Tank_War_Reward_Screen_Design.md
+doc_id: Asset_UI_Tank_War_Reward_Screen_Design
+--------------------------------------------------------------------------------
+Total Requirements: 4
+Implemented: 1
+Partially Implemented: 1
+Not Implemented: 2
+Errors: 0
+
+Top Requirements:
+  - Hiển thị đầy đủ phần thưởng: implemented
+  - Tăng tính hấp dẫn của phần thưởng: partially_implemented
+  - Tích hợp nút 'Double' với hệ thống quảng cáo: not_implemented
+  - Hỗ trợ nút quay lại hệ thống: not_implemented
+
+================================================================================
+
+Document: Asset_UI_Tank_War_Tank_Selection_Screen_Design_(Cơ_chế_chọn_tank).md
+doc_id: Asset_UI_Tank_War_Tank_Selection_Screen_Design_(Cơ_chế_chọn_tank)
+--------------------------------------------------------------------------------
+Total Requirements: 5
+Implemented: 0
+Partially Implemented: 4
+Not Implemented: 0
+Errors: 1
+
+Top Requirements:
+  - Đảm bảo công bằng khi chọn tank: partially_implemented
+  - Kiểm soát thời gian chọn tank: error
+  - Hiển thị rõ ràng thông tin đội và tank đã chọn: partially_implemented
+  - Tự động chọn tank nếu người chơi không chọn: partially_implemented
+  - Tiếp tục sau khi thoát app: partially_implemented
+
+================================================================================
+
+Document: Character_Module_Tank_War_Garage_Design_Functions.md
+doc_id: Character_Module_Tank_War_Garage_Design_Functions
+--------------------------------------------------------------------------------
+Total Requirements: 3
+Implemented: 0
+Partially Implemented: 3
+Not Implemented: 0
+Errors: 0
+
+Top Requirements:
+  - Tương tác giữa các nút phải rõ ràng: partially_implemented
+  - Thông tin được trình bày trực quan: partially_implemented
+  - Thuận lợi cho người chơi: partially_implemented
+
+================================================================================
+
+Document: Character_Module_Tank_War_Garage_Design_Main.md
+doc_id: Character_Module_Tank_War_Garage_Design_Main
+--------------------------------------------------------------------------------
+Total Requirements: 6
+Implemented: 0
+Partially Implemented: 5
+Not Implemented: 1
+Errors: 0
+
+Top Requirements:
+  - Clear and intuitive garage interface: partially_implemented
+  - Visible and accurate tank stats: partially_implemented
+  - Flexible tank appearance customization: partially_implemented
+  - Artifact equipment functionality: not_implemented
+  - Future AI sticker generation function: partially_implemented
+  - Future decal selection in Custom: partially_implemented
+
+================================================================================
+
