@@ -14,6 +14,7 @@ markdown>=3.4.0
 dashscope>=1.25.0
 lightrag>=0.1.0b6
 lightrag-hku>=1.4.9.8
+docling>=1.0.0  # PDF to Markdown conversion
 
 # Supabase (for storage)
 supabase>=2.0.0

@@ -23,42 +23,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 def _resolve_local_code_path(supabase_path: str) -> Optional[Path]:
     """
-    Resolve a Supabase-stored Windows-style path to a local path in the repo.
+    DEPRECATED: This function is no longer used.
+    All file operations now use Supabase only (works on Render).
     
-    Supabase stores absolute Windows paths like:
-    c:\\users\\...\\codebase_rag\\tank_online_1-dev\\Assets\\...
-    
-    We map anything after 'codebase_rag/' onto CODEBASE_ROOT so this works
-    both locally and on Render (where the repo is checked in).
+    Returns None to indicate local file access is not supported.
     """
-    if not supabase_path:
-        return None
-    try:
-        p_norm = str(supabase_path).replace("\\", "/")
-        lower = p_norm.lower()
-        marker = "codebase_rag/"
-        idx = lower.find(marker)
-        if idx != -1:
-            # Portion after codebase_rag/ → relative to CODEBASE_ROOT
-            rel = p_norm[idx + len(marker):]
-            local_path = (CODEBASE_ROOT / rel).resolve()
-            if local_path.exists():
-                return local_path
-        else:
-            # Treat as relative to CODEBASE_ROOT (may include subdirectories)
-            candidate = (CODEBASE_ROOT / p_norm).resolve()
-            if candidate.exists():
-                return candidate
-
-        # If we only have a bare filename (e.g. GameManager.cs), search for it
-        if "/" not in p_norm and "\\" not in p_norm:
-            for found in CODEBASE_ROOT.rglob(p_norm):
-                if found.is_file():
-                    return found.resolve()
-
-        return None
-    except Exception:
-        return None
+    # Local file access is disabled - all operations use Supabase
+    return None
 
 
 def _analyze_csharp_file_symbols(code_text: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:

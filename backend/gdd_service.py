@@ -298,16 +298,19 @@ def _select_chunks_for_answer(chunks):
 
 def upload_and_index_document(file_path: Path):
     """
-    Upload and index a PDF document using the new markdown pipeline.
+    Upload and index a PDF document using the complete Supabase pipeline.
     
     Workflow:
-    1. Save uploaded PDF into DEFAULT_DOCS_DIR
-    2. Convert PDF → Markdown using the PDFtoMarkdown/pdf_to_markdown.py helper
-    3. Chunk the resulting Markdown with MarkdownChunker into rag_storage_md/
-    4. Index the chunks with embeddings into rag_storage_md_indexed/
+    1. Convert PDF → Markdown using Docling
+    2. Upload PDF to Supabase Storage (gdd_pdfs bucket)
+    3. Generate doc_id from filename
+    4. Chunk the Markdown with MarkdownChunker
+    5. Generate embeddings using QwenProvider
+    6. Index chunks with embeddings to Supabase
+    7. Store document metadata with pdf_storage_path and markdown_content
     
     Args:
-        file_path: Path to the uploaded file
+        file_path: Path to the uploaded PDF file
     
     Returns:
         dict: Status and document ID
@@ -319,94 +322,117 @@ def upload_and_index_document(file_path: Path):
                 'message': 'Only PDF files are supported for upload in this version.'
             }
         
-        # 1. Save PDF into docs directory (for reference/backups)
-        target_path = DEFAULT_DOCS_DIR / file_path.name
-        shutil.copy(str(file_path), str(target_path))
-        
-        # 2. Convert PDF → Markdown (for now, skip PDF conversion - documents should be pre-converted)
-        # TODO: Add PDF to Markdown conversion capability if needed
-        # For now, assume documents are already in markdown format or skip this step
-        pdf_md_dir = PROJECT_ROOT / "markdown"
-        pdf_md_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Skip PDF conversion for now - return error if PDF upload is attempted
-        return {
-            'status': 'error',
-            'message': 'PDF upload is not yet supported in the unified app. Please use pre-converted markdown files or implement PDF conversion.'
-        }
-        
-        # Use the existing CLI helper's convert_all function
-        md_paths = pdf2md.convert_all(
-            input_path=target_path,
-            output_dir=pdf_md_dir,
-            ocr_langs=None,
-            overwrite=True,
-        )
-        if not md_paths:
+        if not SUPABASE_AVAILABLE:
             return {
                 'status': 'error',
-                'message': 'Error: PDF to Markdown conversion failed (no output files).'
+                'message': 'Supabase is not configured. Cannot index documents without Supabase.'
             }
         
-        md_path = md_paths[0]
+        import tempfile
+        import logging
+        logger = logging.getLogger(__name__)
         
-        # 3. Chunk the markdown into rag_storage_md/
-        markdown_content = md_path.read_text(encoding="utf-8")
-        doc_id = generate_md_doc_id(md_path)
+        logger.info(f"Starting upload and indexing for: {file_path.name}")
         
-        chunker = MarkdownChunker()
-        chunks = chunker.chunk_document(
-            markdown_content=markdown_content,
-            doc_id=doc_id,
-            filename=str(md_path),
-        )
-        
-        md_output_dir = PROJECT_ROOT / "rag_storage_md" / doc_id
-        save_md_chunks(chunks, doc_id, md_output_dir)
-        
-        # 4. Index chunks - use Supabase if available, otherwise local storage
-        provider = QwenProvider()
-        
-        if SUPABASE_AVAILABLE:
-            # Index to Supabase
-            try:
-                index_gdd_chunks_to_supabase(
-                    doc_id=doc_id,
-                    chunks=chunks,
-                    provider=provider
-                )
-                return {
-                    'status': 'success',
-                    'message': f'Successfully converted, chunked, and indexed to Supabase: {file_path.name} (as {doc_id})',
-                    'doc_id': doc_id
-                }
-            except Exception as e:
-                # Fallback to local storage if Supabase fails
-                print(f"Warning: Supabase indexing failed, falling back to local storage: {e}")
-                embedding_func = make_embedding_func(provider)
-                asyncio.run(index_chunks_for_doc(
-                    doc_id=doc_id,
-                    embedding_func=embedding_func,
-                    dry_run=False,
-                ))
-                return {
-                    'status': 'success',
-                    'message': f'Successfully converted, chunked, and indexed (local storage): {file_path.name} (as {doc_id})',
-                    'doc_id': doc_id
-                }
-        else:
-            # Use local storage
-            embedding_func = make_embedding_func(provider)
-            asyncio.run(index_chunks_for_doc(
-                doc_id=doc_id,
-                embedding_func=embedding_func,
-                dry_run=False,
-            ))
+        # 1. Convert PDF → Markdown using Docling
+        logger.info("Step 1: Converting PDF to Markdown...")
+        try:
+            from docling.document_converter import DocumentConverter
+            from PDFtoMarkdown.pdf_to_markdown import clean_markdown
+            
+            converter = DocumentConverter()
+            
+            # Convert PDF to Markdown
+            result = converter.convert(str(file_path))
+            markdown_content = result.document.export_to_markdown()
+            markdown_content = clean_markdown(markdown_content)
+            
+            logger.info(f"✅ Converted PDF to Markdown ({len(markdown_content)} characters)")
+        except Exception as e:
+            logger.error(f"❌ PDF conversion failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
-                'status': 'success',
-                'message': f'Successfully converted, chunked, and indexed: {file_path.name} (as {doc_id})',
-                'doc_id': doc_id
+                'status': 'error',
+                'message': f'Error converting PDF to Markdown: {str(e)}'
             }
+        
+        # 2. Generate doc_id from PDF filename
+        doc_id = generate_md_doc_id(file_path)
+        logger.info(f"Generated doc_id: {doc_id}")
+        
+        # 3. Sanitize PDF filename for storage (remove special chars, keep safe)
+        from werkzeug.utils import secure_filename
+        pdf_filename = secure_filename(file_path.name)
+        # Replace spaces with underscores for consistency
+        pdf_filename = pdf_filename.replace(' ', '_')
+        
+        # 4. Upload PDF to Supabase Storage
+        logger.info(f"Step 2: Uploading PDF to Supabase Storage as '{pdf_filename}'...")
+        try:
+            from backend.storage.supabase_client import upload_pdf_to_storage
+            upload_success = upload_pdf_to_storage(file_path, pdf_filename)
+            if not upload_success:
+                return {
+                    'status': 'error',
+                    'message': 'Failed to upload PDF to Supabase Storage.'
+                }
+            logger.info("✅ PDF uploaded to Supabase Storage")
+        except Exception as e:
+            logger.error(f"❌ PDF upload failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'status': 'error',
+                'message': f'Error uploading PDF to storage: {str(e)}'
+            }
+        
+        # 5. Chunk the markdown
+        logger.info("Step 3: Chunking Markdown...")
+        try:
+            chunker = MarkdownChunker()
+            chunks = chunker.chunk_document(
+                markdown_content=markdown_content,
+                doc_id=doc_id,
+                filename=file_path.name,
+            )
+            logger.info(f"✅ Created {len(chunks)} chunks")
+        except Exception as e:
+            logger.error(f"❌ Chunking failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'status': 'error',
+                'message': f'Error chunking document: {str(e)}'
+            }
+        
+        # 6. Index chunks to Supabase with embeddings
+        logger.info("Step 4: Generating embeddings and indexing to Supabase...")
+        try:
+            provider = QwenProvider()
+            index_gdd_chunks_to_supabase(
+                doc_id=doc_id,
+                chunks=chunks,
+                provider=provider,
+                markdown_content=markdown_content,  # Store full markdown
+                pdf_storage_path=pdf_filename  # Store PDF storage path
+            )
+            logger.info("✅ Indexed to Supabase")
+        except Exception as e:
+            logger.error(f"❌ Indexing failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'status': 'error',
+                'message': f'Error indexing to Supabase: {str(e)}'
+            }
+        
+        logger.info(f"✅ Successfully processed: {file_path.name} (doc_id: {doc_id})")
+        return {
+            'status': 'success',
+            'message': f'Successfully uploaded, converted, chunked, and indexed: {file_path.name} (as {doc_id})',
+            'doc_id': doc_id
+        }
     except Exception as e:
         return {
             'status': 'error',

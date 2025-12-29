@@ -610,7 +610,8 @@ def index_gdd_chunks_to_supabase(
     doc_id: str,
     chunks: List[Dict],
     provider,
-    markdown_content: Optional[str] = None
+    markdown_content: Optional[str] = None,
+    pdf_storage_path: Optional[str] = None
 ) -> bool:
     """
     Index GDD chunks to Supabase with embeddings.
@@ -619,6 +620,8 @@ def index_gdd_chunks_to_supabase(
         doc_id: Document ID
         chunks: List of chunk dictionaries from MarkdownChunker
         provider: LLM provider for embeddings
+        markdown_content: Optional full markdown content to store
+        pdf_storage_path: Optional PDF filename in Supabase Storage (gdd_pdfs bucket)
     
     Returns:
         True if successful
@@ -659,12 +662,13 @@ def index_gdd_chunks_to_supabase(
         file_path = chunks[0].get("file_path", "") if chunks else ""
         doc_name = Path(file_path).name if file_path else doc_id
         
-        # Store markdown content in Supabase (passed as parameter or None)
+        # Store markdown content and PDF path in Supabase
         insert_gdd_document(
             doc_id=doc_id,
             name=doc_name,
             file_path=file_path,
-            markdown_content=markdown_content  # Store markdown content in Supabase
+            markdown_content=markdown_content,  # Store markdown content in Supabase
+            pdf_storage_path=pdf_storage_path  # Store PDF storage path
         )
         
         # Insert chunks
