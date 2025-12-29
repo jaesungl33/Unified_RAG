@@ -1,0 +1,18 @@
+# Default: do NOT auto-convert line endings
+* text=auto eol=lf
+
+# Unity text assets
+*.meta text eol=lf
+*.mat text eol=lf
+*.asset text eol=lf
+*.prefab text eol=lf
+*.unity text eol=lf
+*.controller text eol=lf
+*.anim text eol=lf
+
+# Binary files (never touch)
+*.png binary
+*.jpg binary
+*.fbx binary
+*.wav binary
+*.mp3 binary
