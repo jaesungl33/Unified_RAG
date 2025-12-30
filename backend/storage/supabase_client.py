@@ -5,6 +5,7 @@ Supabase client for vector storage
 import os
 import sys
 from typing import List, Dict, Optional, Any
+from pathlib import Path
 
 # Workaround: Mock storage3 if not available (we don't use it)
 try:
