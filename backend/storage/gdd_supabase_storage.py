@@ -761,17 +761,62 @@ def index_gdd_chunks_to_supabase(
             if embedding is None:
                 continue  # Should not reach here due to raise above, but safety check
             
+            
+            # ---- Extract section + metadata fields safely ----
+            # chunk_metadata is already set above (dict for both object/dict paths)
+            meta = chunk_metadata if isinstance(chunk_metadata, dict) else {}
+
+            section_header = meta.get("section_header") or chunk_section or ""
+            numbered_header = meta.get("numbered_header") or section_header
+            content_type = meta.get("content_type") or ""
+            doc_category = meta.get("doc_category") or "General"
+            tags = meta.get("tags") if isinstance(meta.get("tags"), list) else None
+
+            # Best-effort numeric indexes (keeps your UI ordering stable)
+            # If your chunk ids look like "chunk_006", use that as section_index
+            section_index = None
+            m = re.search(r"chunk_(\d+)", str(raw_chunk_id))
+            if m:
+                try:
+                    section_index = int(m.group(1))
+                except Exception:
+                    section_index = None
+            if section_index is None:
+                section_index = i + 1
+
+            # paragraph_index: if chunker has part_number use it, otherwise default to 1
+            paragraph_index = meta.get("part_number") or 1
+
+            # Build clean metadata (do NOT nest metadata inside metadata)
+            clean_metadata = dict(meta)
+            clean_metadata.update({
+                "chunk_index": i,
+                "original_chunk_id": raw_chunk_id,
+                "section_header": section_header,
+                "numbered_header": numbered_header,
+            })
+
+            # ---- Supabase record with real columns populated ----
             supabase_chunks.append({
                 "chunk_id": chunk_id,
                 "doc_id": doc_id,
                 "content": content,
                 "embedding": embedding,
-                "metadata": {
-                    "chunk_index": i,
-                    "section": chunk.get("section", ""),
-                    "metadata": chunk.get("metadata", {})
-                }
+
+                # IMPORTANT: populate DB columns for section targeting
+                "section_path": section_header,
+                "section_title": section_header,
+                "subsection_title": None,
+                "section_index": section_index,
+                "paragraph_index": paragraph_index,
+                "content_type": content_type,
+                "doc_category": doc_category,
+                "tags": tags,
+
+                # Keep metadata flat and useful
+                "metadata": clean_metadata,
             })
+
         
         # Insert document metadata
         # Handle both MarkdownChunk objects and dictionaries

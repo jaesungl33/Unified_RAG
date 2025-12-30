@@ -311,14 +311,33 @@ def insert_gdd_chunks(chunks: List[Dict[str, Any]]) -> int:
                     print(f"Warning: Could not convert embedding to floats for chunk {chunk.get('chunk_id')}, skipping")
                     continue
             
+                        
             record = {
                 'chunk_id': chunk['chunk_id'],
                 'doc_id': chunk['doc_id'],
                 'content': chunk['content'],
-                'embedding': embedding,  # Now guaranteed to be a list of floats or None
+                'embedding': embedding,  # list[float] or None
                 'metadata': chunk.get('metadata', {})
             }
+
+            # Forward section-aware columns when provided by gdd_supabase_storage.py
+            optional_cols = [
+                'section_path',
+                'section_title',
+                'subsection_title',
+                'section_index',
+                'paragraph_index',
+                'content_type',
+                'doc_category',
+                'tags',
+            ]
+
+            for col in optional_cols:
+                if col in chunk:
+                    record[col] = chunk.get(col)
+
             records.append(record)
+
         
         # Insert in batches (Supabase has limits)
         batch_size = 100

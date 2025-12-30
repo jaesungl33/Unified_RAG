@@ -10,6 +10,9 @@ import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+from io import BytesIO
+from werkzeug.utils import secure_filename
+
 # Add project root to path for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -180,15 +183,7 @@ def extract_full_document(doc_id: str) -> str:
                     return markdown_content
                 
                 # PRIORITY 2b: Try reading from file_path if markdown_content not stored
-                if file_path:
-                    try:
-                        md_file = Path(file_path)
-                        if md_file.exists():
-                            content = md_file.read_text(encoding='utf-8')
-                            logger.info(f"[Extract Full Doc] Read from file_path for {doc_id}")
-                            return content
-                    except Exception as e:
-                        logger.debug(f"[Extract Full Doc] Failed to read from file_path: {e}")
+                pass
         except Exception as e:
             logger.debug(f"[Extract Full Doc] Error getting markdown_content: {e}")
         
@@ -199,18 +194,6 @@ def extract_full_document(doc_id: str) -> str:
             # First check if document exists
             doc_result = client.table('gdd_documents').select('doc_id, file_path').eq('doc_id', doc_id).limit(1).execute()
             if not doc_result.data:
-                # Last resort: try to find markdown file by doc_id
-                markdown_dir = PROJECT_ROOT / "gdd_data" / "markdown"
-                if markdown_dir.exists():
-                    for md_file in markdown_dir.glob("*.md"):
-                        if generate_md_doc_id(md_file) == doc_id:
-                            try:
-                                content = md_file.read_text(encoding='utf-8')
-                                logger.info(f"[Extract Full Doc] Found and read markdown file for {doc_id}")
-                                return content
-                            except Exception as e:
-                                logger.debug(f"[Extract Full Doc] Failed to read markdown file: {e}")
-                
                 return f"Error: Document '{doc_id}' not found in Supabase."
             
             # Get all chunks for this document, ordered by chunk_id
@@ -218,17 +201,6 @@ def extract_full_document(doc_id: str) -> str:
             
             if not result.data:
                 # Try reading from file_path as last resort
-                file_path = doc_result.data[0].get('file_path', '')
-                if file_path:
-                    try:
-                        md_file = Path(file_path)
-                        if md_file.exists():
-                            content = md_file.read_text(encoding='utf-8')
-                            logger.info(f"[Extract Full Doc] Read from file_path (no chunks) for {doc_id}")
-                            return content
-                    except Exception as e:
-                        logger.debug(f"[Extract Full Doc] Failed to read from file_path: {e}")
-                
                 return f"Error: Document '{doc_id}' exists in Supabase but has no chunks and no markdown_content. Please re-index the document."
             
             # Reconstruct document from chunks
@@ -355,149 +327,132 @@ def _select_chunks_for_answer(chunks):
     return chunks[:n]
 
 
-def upload_and_index_document(file_path: Path):
+def _convert_pdf_bytes_to_markdown(pdf_bytes: bytes, filename: str) -> str:
     """
-    Upload and index a PDF document using the complete Supabase pipeline.
-    
-    Workflow:
-    1. Convert PDF → Markdown using Docling
-    2. Upload PDF to Supabase Storage (gdd_pdfs bucket)
-    3. Generate doc_id from filename
-    4. Chunk the Markdown with MarkdownChunker
-    5. Generate embeddings using QwenProvider
-    6. Index chunks with embeddings to Supabase
-    7. Store document metadata with pdf_storage_path and markdown_content
-    
-    Args:
-        file_path: Path to the uploaded PDF file
-    
-    Returns:
-        dict: Status and document ID
+    Convert PDF bytes to Markdown using Docling without writing to disk.
+    Uses Docling DocumentStream (in-memory).
     """
-    try:
-        if file_path.suffix.lower() != ".pdf":
-            return {
-                'status': 'error',
-                'message': 'Only PDF files are supported for upload in this version.'
-            }
-        
-        if not SUPABASE_AVAILABLE:
-            return {
-                'status': 'error',
-                'message': 'Supabase is not configured. Cannot index documents without Supabase.'
-            }
-        
-        import tempfile
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        logger.info(f"Starting upload and indexing for: {file_path.name}")
-        
-        # 1. Convert PDF → Markdown using Docling
-        logger.info("Step 1: Converting PDF to Markdown...")
-        try:
-            from docling.document_converter import DocumentConverter
-            from PDFtoMarkdown.pdf_to_markdown import clean_markdown
-            
-            converter = DocumentConverter()
-            
-            # Convert PDF to Markdown
-            result = converter.convert(str(file_path))
-            markdown_content = result.document.export_to_markdown()
-            markdown_content = clean_markdown(markdown_content)
-            
-            logger.info(f"✅ Converted PDF to Markdown ({len(markdown_content)} characters)")
-        except Exception as e:
-            logger.error(f"❌ PDF conversion failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                'status': 'error',
-                'message': f'Error converting PDF to Markdown: {str(e)}'
-            }
-        
-        # 2. Generate doc_id from PDF filename
-        doc_id = generate_md_doc_id(file_path)
-        logger.info(f"Generated doc_id: {doc_id}")
-        
-        # 3. Sanitize PDF filename for storage (remove special chars, keep safe)
-        from werkzeug.utils import secure_filename
-        pdf_filename = secure_filename(file_path.name)
-        # Replace spaces with underscores for consistency
-        pdf_filename = pdf_filename.replace(' ', '_')
-        
-        # 4. Upload PDF to Supabase Storage
-        logger.info(f"Step 2: Uploading PDF to Supabase Storage as '{pdf_filename}'...")
-        try:
-            from backend.storage.supabase_client import upload_pdf_to_storage
-            upload_success = upload_pdf_to_storage(file_path, pdf_filename)
-            if not upload_success:
-                return {
-                    'status': 'error',
-                    'message': 'Failed to upload PDF to Supabase Storage.'
-                }
-            logger.info("✅ PDF uploaded to Supabase Storage")
-        except Exception as e:
-            logger.error(f"❌ PDF upload failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                'status': 'error',
-                'message': f'Error uploading PDF to storage: {str(e)}'
-            }
-        
-        # 5. Chunk the markdown
-        logger.info("Step 3: Chunking Markdown...")
-        try:
-            chunker = MarkdownChunker()
-            chunks = chunker.chunk_document(
-                markdown_content=markdown_content,
-                doc_id=doc_id,
-                filename=file_path.name,
-            )
-            logger.info(f"✅ Created {len(chunks)} chunks")
-        except Exception as e:
-            logger.error(f"❌ Chunking failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                'status': 'error',
-                'message': f'Error chunking document: {str(e)}'
-            }
-        
-        # 6. Index chunks to Supabase with embeddings
-        logger.info("Step 4: Generating embeddings and indexing to Supabase...")
-        try:
-            provider = QwenProvider()
-            index_gdd_chunks_to_supabase(
-                doc_id=doc_id,
-                chunks=chunks,
-                provider=provider,
-                markdown_content=markdown_content,  # Store full markdown
-                pdf_storage_path=pdf_filename  # Store PDF storage path
-            )
-            logger.info("✅ Indexed to Supabase")
-        except Exception as e:
-            logger.error(f"❌ Indexing failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                'status': 'error',
-                'message': f'Error indexing to Supabase: {str(e)}'
-            }
-        
-        logger.info(f"✅ Successfully processed: {file_path.name} (doc_id: {doc_id})")
+    from docling.document_converter import DocumentConverter
+    from docling.datamodel.base_models import DocumentStream
+    from PDFtoMarkdown.pdf_to_markdown import clean_markdown
+
+    converter = DocumentConverter()
+
+    stream = BytesIO(pdf_bytes)
+    doc_stream = DocumentStream(name=filename, stream=stream)  # Docling supports DocumentStream input [2](https://docling-project.github.io/docling/reference/document_converter/)[3](https://deepwiki.com/docling-project/docling/1.2-quick-start)
+
+    result = converter.convert(doc_stream)  # convert() accepts Path/URL/DocumentStream [2](https://docling-project.github.io/docling/reference/document_converter/)[4](https://deepwiki.com/docling-project/docling/7.3-usage-examples)
+    markdown_content = result.document.export_to_markdown()
+    return clean_markdown(markdown_content)
+
+
+
+def upload_and_index_document_bytes(pdf_bytes: bytes, original_filename: str):
+    """
+    Upload and index a PDF using bytes (no local disk).
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Validate filename-based type check
+    if not original_filename.lower().endswith(".pdf"):
         return {
-            'status': 'success',
-            'message': f'Successfully uploaded, converted, chunked, and indexed: {file_path.name} (as {doc_id})',
-            'doc_id': doc_id
-        }
-    except Exception as e:
-        return {
-            'status': 'error',
-            'message': f'Error: {str(e)}'
+            "status": "error",
+            "message": "Only PDF files are supported for upload in this version."
         }
 
+    if not SUPABASE_AVAILABLE:
+        return {
+            "status": "error",
+            "message": "Supabase is not configured. Cannot index documents without Supabase."
+        }
+
+    logger.info(f"Starting upload+index (bytes) for: {original_filename}")
+
+    # 1) Convert PDF -> Markdown (diskless)
+    logger.info("Step 1: Converting PDF bytes to Markdown (Docling DocumentStream)...")
+    try:
+        markdown_content = _convert_pdf_bytes_to_markdown(pdf_bytes, original_filename)
+        logger.info(f"✅ Converted to Markdown ({len(markdown_content)} chars)")
+    except Exception as e:
+        logger.error(f"❌ PDF conversion failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"status": "error", "message": f"Error converting PDF to Markdown: {str(e)}"}
+
+    # 2) doc_id + sanitized storage filename
+    doc_id = generate_md_doc_id(Path(original_filename))
+    pdf_filename = secure_filename(original_filename).replace(" ", "_")
+
+    
+    # 3) Upload PDF bytes to Supabase Storage (direct, no local disk, no extra helper)
+    logger.info(f"Step 2: Uploading PDF bytes to Supabase Storage as '{pdf_filename}'...")
+    try:
+        from backend.storage.supabase_client import get_supabase_client
+
+        # Use service key for write access (RLS-safe)
+        client = get_supabase_client(use_service_key=True)
+
+        bucket_name = "gdd_pdfs"
+
+        # Upload bytes directly
+        client.storage.from_(bucket_name).upload(
+            path=pdf_filename,
+            file=pdf_bytes,
+            file_options={
+                "content-type": "application/pdf",
+                "cache-control": "3600",
+                "upsert": "true",
+            },
+        )
+
+        logger.info("✅ PDF uploaded to Supabase Storage")
+    except Exception as e:
+        logger.error(f"❌ PDF upload failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"status": "error", "message": f"Error uploading PDF to storage: {str(e)}"}
+
+
+    # 4) Chunk Markdown
+    logger.info("Step 3: Chunking Markdown...")
+    try:
+        chunker = MarkdownChunker()
+        chunks = chunker.chunk_document(
+            markdown_content=markdown_content,
+            doc_id=doc_id,
+            filename=original_filename,
+        )
+        logger.info(f"✅ Created {len(chunks)} chunks")
+    except Exception as e:
+        logger.error(f"❌ Chunking failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"status": "error", "message": f"Error chunking document: {str(e)}"}
+
+    # 5) Index to Supabase
+    logger.info("Step 4: Generating embeddings and indexing to Supabase...")
+    try:
+        provider = QwenProvider()
+        index_gdd_chunks_to_supabase(
+            doc_id=doc_id,
+            chunks=chunks,
+            provider=provider,
+            markdown_content=markdown_content,
+            pdf_storage_path=pdf_filename
+        )
+        logger.info("✅ Indexed to Supabase")
+    except Exception as e:
+        logger.error(f"❌ Indexing failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"status": "error", "message": f"Error indexing to Supabase: {str(e)}"}
+
+    return {
+        "status": "success",
+        "message": f"Successfully uploaded, converted, chunked, and indexed: {original_filename} (as {doc_id})",
+        "doc_id": doc_id
+    }
 
 def list_documents():
     """
