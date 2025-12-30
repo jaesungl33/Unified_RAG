@@ -213,3 +213,5 @@ if __name__ == "__main__":
     logger.info(f"Project root: {PROJECT_ROOT}")
     update_pdf_paths_smart()
     logger.info("\n✅ Done!")
+
+

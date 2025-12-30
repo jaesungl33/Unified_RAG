@@ -10,6 +10,65 @@ from pathlib import Path
 from dotenv import load_dotenv
 import logging
 
+import uuid
+import threading
+from time import sleep
+from backend.gdd_service import upload_and_index_document_bytes
+
+
+# --- Simple in-memory progress tracking and job execution ---
+import uuid
+import threading
+from time import sleep
+
+# Global dict: job_id -> progress info
+UPLOAD_JOBS = {}  # { job_id: {"status": "running|success|error", "step": "...", "message": "", "doc_id": None } }
+JOBS_LOCK = threading.Lock()
+
+def new_job():
+    job_id = uuid.uuid4().hex
+    with JOBS_LOCK:
+        UPLOAD_JOBS[job_id] = {"status": "running", "step": "Uploading file", "message": "", "doc_id": None}
+    return job_id
+
+def update_job(job_id, step=None, status=None, message=None, doc_id=None):
+    with JOBS_LOCK:
+        job = UPLOAD_JOBS.get(job_id)
+        if not job:
+            return
+        if step is not None:
+            job["step"] = step
+        if status is not None:
+            job["status"] = status
+        if message is not None:
+            job["message"] = message
+        if doc_id is not None:
+            job["doc_id"] = doc_id
+
+def get_job(job_id):
+    with JOBS_LOCK:
+        return UPLOAD_JOBS.get(job_id, None)
+
+
+
+def run_upload_pipeline_async(job_id, pdf_bytes, filename):
+    # Progress callback used by gdd_service
+    def progress_cb(step_text):
+        update_job(job_id, step=step_text)
+
+    try:
+        update_job(job_id, step="Converting to Markdown")
+        # Modify gdd_service.upload_and_index_document_bytes to accept progress_cb
+        result = upload_and_index_document_bytes(pdf_bytes, filename, progress_cb=progress_cb)
+        # result is dict: {"status": "success|error", "message": "...", "doc_id": "..."}
+        if result.get("status") == "success":
+            update_job(job_id, status="success", step="Completed", message=result.get("message"), doc_id=result.get("doc_id"))
+        else:
+            update_job(job_id, status="error", step="Failed", message=result.get("message"))
+    except Exception as e:
+        update_job(job_id, status="error", step="Failed", message=str(e))
+
+
 # Load environment variables
 load_dotenv()
 
@@ -21,7 +80,6 @@ if str(PROJECT_ROOT) not in sys.path:
 # Configuration
 CONFIG = {
     'SECRET_KEY': os.getenv('FLASK_SECRET_KEY', os.urandom(24).hex()),
-    'LOG_FILE': 'app.log',
     'LOG_FORMAT': '%(asctime)s - %(message)s',
     'LOG_DATE_FORMAT': '%d-%b-%y %H:%M:%S'
 }
@@ -30,19 +88,21 @@ CONFIG = {
 def setup_logging(config):
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
-    
-    file_handler = logging.FileHandler(config['LOG_FILE'])
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter(config['LOG_FORMAT'], datefmt=config['LOG_DATE_FORMAT']))
-    
+
+    # Prevent duplicate handlers if reloaded
+    if logger.handlers:
+        return logger
+
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(logging.Formatter(config['LOG_FORMAT'], datefmt=config['LOG_DATE_FORMAT']))
-    
-    logger.addHandler(file_handler)
+    console_handler.setFormatter(logging.Formatter(
+        config['LOG_FORMAT'],
+        datefmt=config['LOG_DATE_FORMAT']
+    ))
     logger.addHandler(console_handler)
-    
+
     return logger
+
 
 # Create Flask app
 try:
@@ -79,12 +139,13 @@ app.logger.info(f"DASHSCOPE_API_KEY: {'SET' if os.getenv('DASHSCOPE_API_KEY') el
 app.logger.info("Importing GDD service...")
 try:
     from backend.gdd_service import (
-        upload_and_index_document,
+        upload_and_index_document_bytes,
         list_documents,
         get_document_options,
         query_gdd_documents,
         get_document_sections
     )
+
     gdd_service_available = True
     app.logger.info("[OK] GDD service imported successfully")
     
@@ -125,7 +186,7 @@ except ImportError as e:
 
 # Log all registered routes on startup
 def log_registered_routes():
-    """Log all registered routes for debugging"""
+    """Log registered routes for debugging (safe: no recursion)."""
     try:
         with app.app_context():
             app.logger.info("Registered routes:")
@@ -136,15 +197,15 @@ def log_registered_routes():
     except Exception as e:
         app.logger.warning(f"Could not log routes: {e}")
 
+
+
 # Log routes after app is fully configured
 try:
     log_registered_routes()
     app.logger.info("=" * 60)
     app.logger.info("App is ready to serve requests")
     app.logger.info("=" * 60)
-except Exception as e:
-    app.logger.warning(f"Error logging routes: {e}")
-        
+
 except ImportError as e:
     app.logger.error(f"[ERROR] Could not import Code service: {e}")
     import traceback
@@ -185,42 +246,56 @@ def gdd_query():
         app.logger.error(f"Error in GDD query: {e}")
         return jsonify({'error': str(e), 'status': 'error'}), 500
 
+
+@app.route('/api/gdd/upload/status', methods=['GET'])
+def gdd_upload_status():
+    """Poll the current status of an upload job."""
+    job_id = request.args.get('job_id')
+    if not job_id:
+        return jsonify({'status': 'error', 'message': 'job_id required'}), 400
+
+    job = get_job(job_id)
+    if not job:
+        return jsonify({'status': 'error', 'message': 'Unknown job_id'}), 404
+
+    # Always JSON
+    return jsonify({
+        'status': job['status'],  # running | success | error
+        'step': job['step'],
+        'message': job['message'],
+        'doc_id': job['doc_id'],
+        'job_id': job_id,
+    }), 200
+
+
 @app.route('/api/gdd/upload', methods=['POST'])
 def gdd_upload():
-    """Handle document uploads for GDD RAG"""
+    """Start an async upload + index job and return a job_id immediately."""
     try:
         if not gdd_service_available:
-            return jsonify({'error': 'GDD service not available'}), 500
-        
+            return jsonify({'status': 'error', 'message': 'GDD service not available'}), 500
+
         if 'file' not in request.files:
-            return jsonify({'error': 'No file provided', 'status': 'error'}), 400
-        
+            return jsonify({'status': 'error', 'message': 'No file provided'}), 400
+
         file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No file selected', 'status': 'error'}), 400
-        
-        # Save uploaded file temporarily
-        from werkzeug.utils import secure_filename
-        import tempfile
-        
-        filename = secure_filename(file.filename)
-        temp_dir = Path(tempfile.gettempdir())
-        temp_file = temp_dir / filename
-        file.save(str(temp_file))
-        
-        # Process the file
-        result = upload_and_index_document(temp_file)
-        
-        # Clean up temp file
-        try:
-            temp_file.unlink()
-        except:
-            pass
-        
-        return jsonify(result)
+        if not file or file.filename == '':
+            return jsonify({'status': 'error', 'message': 'No file selected'}), 400
+
+        pdf_bytes = file.read()
+        job_id = new_job()
+        # Start background thread
+        t = threading.Thread(target=run_upload_pipeline_async, args=(job_id, pdf_bytes, file.filename), daemon=True)
+        t.start()
+
+        # Respond immediately with job_id
+        return jsonify({'status': 'accepted', 'job_id': job_id, 'step': 'Uploading file'}), 202
+
     except Exception as e:
         app.logger.error(f"Error in GDD upload: {e}")
-        return jsonify({'error': str(e), 'status': 'error'}), 500
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 
 @app.route('/api/gdd/documents', methods=['GET'])
 def gdd_documents():

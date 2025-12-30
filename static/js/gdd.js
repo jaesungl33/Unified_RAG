@@ -94,6 +94,26 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
     
+    
+    async function parseJsonSafe(response) {
+        const raw = await response.text();   // Always read as text first
+        let data = null;
+
+        if (raw && raw.trim().length > 0) {
+            try {
+                data = JSON.parse(raw);
+            } catch {
+                // Not JSON (e.g., HTML error page) — wrap it
+                data = { status: response.ok ? 'success' : 'error', message: raw };
+            }
+        } else {
+            // Empty body — fabricate a small, safe payload
+            data = { status: response.ok ? 'success' : 'error', message: response.ok ? 'Uploaded' : 'Empty response' };
+        }
+        return data;
+    }
+
+
     // Upload file
     uploadBtn.addEventListener('click', uploadFile);
     
@@ -142,7 +162,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 selected_doc: selectedDocument
             })
         })
-        .then(response => response.json())
+        .then(parseJsonSafe)
         .then(data => {
             removeTypingIndicator(typingIndicator);
             if (data.status === 'error') {
@@ -159,46 +179,81 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
+    
     function uploadFile() {
         const file = fileUpload.files[0];
         if (!file) {
             alert('Please select a file');
             return;
         }
-        
+
         uploadStatus.style.display = 'block';
-        uploadStatus.textContent = 'Uploading...';
-        
+        uploadStatus.style.color = '#0b5ed7'; // neutral while in progress
+        uploadStatus.textContent = 'Uploading file…';
+
         const formData = new FormData();
         formData.append('file', file);
-        
-        fetch('/api/gdd/upload', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
+
+        fetch('/api/gdd/upload', { method: 'POST', body: formData })
+            .then(parseJsonSafe)
+            .then(data => {
             if (data.status === 'error') {
-                uploadStatus.textContent = 'Error: ' + (data.message || data.error || 'Upload failed');
+                uploadStatus.textContent = 'Error: ' + (data.message || 'Upload failed');
                 uploadStatus.style.color = '#d32f2f';
-                uploadStatus.style.display = 'block';
-            } else {
-                uploadStatus.textContent = data.message || 'Upload successful';
-                uploadStatus.style.color = '#2e7d32';
-                uploadStatus.style.display = 'block';
-                loadDocuments();
-                // Clear file input
-                fileUpload.value = '';
+                return;
             }
+
+            if (data.status !== 'accepted' || !data.job_id) {
+                uploadStatus.textContent = 'Unexpected response; upload not started.';
+                uploadStatus.style.color = '#d32f2f';
+                return;
+            }
+
+            const jobId = data.job_id;
+            uploadStatus.textContent = data.step || 'Uploading file…';
+
+            // Poll status every 1 second
+            const interval = setInterval(() => {
+                fetch(`/api/gdd/upload/status?job_id=${encodeURIComponent(jobId)}`)
+                    .then(parseJsonSafe)
+                    .then(statusData => {
+                        if (!statusData || !statusData.status) return;
+
+                        // Update the one-liner
+                        const stepText = statusData.step || 'Working…';
+                        uploadStatus.textContent = stepText;
+
+                        if (statusData.status === 'success') {
+                            uploadStatus.style.color = '#2e7d32';
+                            uploadStatus.textContent = statusData.message || 'Upload complete';
+                            clearInterval(interval);
+                            fileUpload.value = '';
+                            // Refresh document list
+                        loadDocuments();
+                        } else if (statusData.status === 'error') {
+                            uploadStatus.style.color = '#d32f2f';
+                            uploadStatus.textContent = 'Error: ' + (statusData.message || 'Upload failed');
+                            clearInterval(interval);
+                        } else {
+                            // status === 'running' → continue polling
+                        }
+                })
+            .catch(err => {
+                // Keep polling; transient network errors can happen
+                console.warn('Status poll error:', err);
+            });
+            }, 1000);
         })
         .catch(error => {
             uploadStatus.textContent = 'Error: ' + error.message;
+            uploadStatus.style.color = '#d32f2f';
         });
     }
+
     
     function loadDocuments() {
         fetch('/api/gdd/documents')
-            .then(response => response.json())
+            .then(parseJsonSafe)
             .then(data => {
                 // Store all documents data for filtering
                 allDocumentsData = data;
@@ -331,6 +386,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 docItem.innerHTML = `<span class="name">${displayName}</span>`;
                 docItem.dataset.docValue = optionValue; // Store optionValue for easier access
+                docItem.dataset.docId = doc.doc_id; // Store actual doc_id for direct access
                 docItem.title = optionValue; // Store in title for easier access
                 
                 docItem.addEventListener('click', function() {
@@ -371,12 +427,35 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Extract doc_id from selected document
         if (selectedDocument && selectedDocument !== 'All Documents') {
-            // Extract doc_id from format: "filename (doc_id) - X chunks"
-            const match = selectedDocument.match(/\(([^)]+)\)/);
-            selectedDocId = match ? match[1] : null;
+            // Use stored doc_id if available (most reliable)
+            if (element && element.dataset.docId) {
+                selectedDocId = element.dataset.docId;
+            } else {
+                // Fallback: try to extract from optionValue format: "filename (doc_id) - X chunks"
+                // Match the LAST parentheses before " - " to handle doc_ids with parentheses
+                const match = selectedDocument.match(/\(([^)]+)\)\s*-\s*\d+/);
+                if (match) {
+                    selectedDocId = match[1];
+                } else {
+                    // Try to find doc_id from allDocumentsData
+                    if (allDocumentsData && allDocumentsData.documents) {
+                        const doc = allDocumentsData.documents.find(d => {
+                            const opt = allDocumentsData.options ? 
+                                allDocumentsData.options.find(o => o.includes(d.name || d.doc_id) || o.includes(d.doc_id)) : 
+                                `${d.name || d.doc_id} (${d.doc_id})`;
+                            return opt === selectedDocument;
+                        });
+                        if (doc) {
+                            selectedDocId = doc.doc_id;
+                        }
+                    }
+                }
+            }
             
             // Load sections for this document
-            loadDocumentSections(selectedDocId);
+            if (selectedDocId) {
+                loadDocumentSections(selectedDocId);
+            }
         } else {
             selectedDocId = null;
             documentSections = [];
@@ -425,7 +504,9 @@ document.addEventListener('DOMContentLoaded', function() {
         const inputValue = queryInput.value;
         
         // Extract @documentname pattern from input
-        const atPattern = inputValue.match(/@(\S+)/);
+        // Match @ followed by text until space, @, or end of string
+        // This handles doc_ids with parentheses like @Asset_UI_Tank_War_Tank_Selection_Screen_Design_(Cơ_chế_chọn_tank)
+        const atPattern = inputValue.match(/@([^\s@]+)/);
         if (!atPattern) {
             // No @pattern found, deselect if something was selected
             if (selectedDocument && selectedDocument !== 'All Documents') {
@@ -441,6 +522,16 @@ document.addEventListener('DOMContentLoaded', function() {
         let matchedDoc = null;
         let matchedOptionValue = null;
         
+        // Normalize input for matching (remove special chars, lowercase)
+        const normalizeForMatch = (text) => {
+            if (!text) return '';
+            return text.toLowerCase()
+                .replace(/[()[\]_,-]/g, '')
+                .replace(/\s+/g, '');
+        };
+        
+        const normalizedInput = normalizeForMatch(docNameFromInput);
+        
         // Check all documents
         allDocumentsData.documents.forEach(doc => {
             const rawName = doc.name || doc.doc_id || 'Unknown';
@@ -449,10 +540,21 @@ document.addEventListener('DOMContentLoaded', function() {
                 allDocumentsData.options.find(opt => opt.includes(rawName) || opt.includes(doc.doc_id)) : 
                 `${rawName} (${doc.doc_id})`;
             
-            // Try to match by display name or raw name
-            if (displayName.toLowerCase() === docNameFromInput.toLowerCase() ||
-                rawName.toLowerCase().includes(docNameFromInput.toLowerCase()) ||
-                optionValue.toLowerCase().includes(docNameFromInput.toLowerCase())) {
+            // Normalize doc_id and names for comparison
+            const normalizedDocId = normalizeForMatch(doc.doc_id);
+            const normalizedRawName = normalizeForMatch(rawName);
+            const normalizedDisplayName = normalizeForMatch(displayName);
+            
+            // Try to match by:
+            // 1. Exact doc_id match (normalized)
+            // 2. Display name match (normalized)
+            // 3. Raw name match (normalized)
+            // 4. Partial match in doc_id
+            if (normalizedDocId === normalizedInput ||
+                normalizedDisplayName === normalizedInput ||
+                normalizedRawName === normalizedInput ||
+                normalizedDocId.includes(normalizedInput) ||
+                normalizedInput.includes(normalizedDocId)) {
                 matchedDoc = doc;
                 matchedOptionValue = optionValue;
             }
@@ -461,9 +563,16 @@ document.addEventListener('DOMContentLoaded', function() {
         // Update selectedDocument if match found
         if (matchedOptionValue && selectedDocument !== matchedOptionValue) {
             selectedDocument = matchedOptionValue;
-            // Extract doc_id and load sections
-            const match = matchedOptionValue.match(/\(([^)]+)\)/);
-            selectedDocId = match ? match[1] : null;
+            // Use the actual doc_id from the matched document (most reliable)
+            selectedDocId = matchedDoc ? matchedDoc.doc_id : null;
+            
+            // Fallback: try to extract from optionValue if doc_id not available
+            if (!selectedDocId) {
+                // Match the LAST parentheses before " - " to handle doc_ids with parentheses
+                const match = matchedOptionValue.match(/\(([^)]+)\)\s*-\s*\d+/);
+                selectedDocId = match ? match[1] : null;
+            }
+            
             if (selectedDocId) {
                 loadDocumentSections(selectedDocId);
             }
@@ -699,13 +808,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         console.log('[Section Dropdown] Loading sections for doc_id:', docId);
         fetch(`/api/gdd/sections?doc_id=${encodeURIComponent(docId)}`)
-            .then(response => {
-                console.log('[Section Dropdown] Response status:', response.status, response.statusText);
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                return response.json();
-            })
+            .then(parseJsonSafe)
             .then(data => {
                 console.log('[Section Dropdown] Received sections data:', data);
                 if (data.sections && Array.isArray(data.sections)) {

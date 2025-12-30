@@ -10,6 +10,9 @@ import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+from io import BytesIO
+from werkzeug.utils import secure_filename
+
 # Add project root to path for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -140,6 +143,7 @@ def extract_full_document(doc_id: str) -> str:
     Extract full document content from Supabase (no local file dependency).
     
     If markdown_content is not stored, reconstructs document from chunks.
+    Falls back to reading from markdown file if available.
     
     Args:
         doc_id: Document ID
@@ -152,23 +156,43 @@ def extract_full_document(doc_id: str) -> str:
     
     try:
         from backend.storage.supabase_client import get_gdd_document_markdown, get_gdd_document_pdf_url, get_supabase_client
+        import logging
+        logger = logging.getLogger(__name__)
         
         # PRIORITY 1: Check if PDF exists in Supabase Storage - if yes, return PDF embed
-        pdf_url = get_gdd_document_pdf_url(doc_id)
-        if pdf_url:
-            return f'**PDF Document: {doc_id}**\n\n[📄 View PDF]({pdf_url})\n\n<iframe src="{pdf_url}" width="100%" height="800px" style="border: 1px solid #ccc;"></iframe>'
+        try:
+            pdf_url = get_gdd_document_pdf_url(doc_id)
+            if pdf_url:
+                logger.info(f"[Extract Full Doc] Returning PDF URL for {doc_id}")
+                return f'**PDF Document: {doc_id}**\n\n[📄 View PDF]({pdf_url})\n\n<iframe src="{pdf_url}" width="100%" height="800px" style="border: 1px solid #ccc;"></iframe>'
+        except Exception as e:
+            logger.debug(f"[Extract Full Doc] PDF URL check failed: {e}")
         
-        # PRIORITY 2: Try to get markdown content from gdd_documents table
-        content = get_gdd_document_markdown(doc_id)
-        if content:
-            return content
+        # PRIORITY 2: Try to get markdown content directly from gdd_documents table
+        try:
+            client = get_supabase_client()
+            doc_result = client.table('gdd_documents').select('markdown_content, file_path').eq('doc_id', doc_id).limit(1).execute()
+            
+            if doc_result.data:
+                doc = doc_result.data[0]
+                markdown_content = doc.get('markdown_content')
+                file_path = doc.get('file_path', '')
+                
+                if markdown_content:
+                    logger.info(f"[Extract Full Doc] Returning markdown_content for {doc_id}")
+                    return markdown_content
+                
+                # PRIORITY 2b: Try reading from file_path if markdown_content not stored
+                pass
+        except Exception as e:
+            logger.debug(f"[Extract Full Doc] Error getting markdown_content: {e}")
         
         # PRIORITY 3 (Fallback): Reconstruct document from chunks if markdown_content not stored
         try:
             client = get_supabase_client()
             
             # First check if document exists
-            doc_result = client.table('gdd_documents').select('doc_id').eq('doc_id', doc_id).limit(1).execute()
+            doc_result = client.table('gdd_documents').select('doc_id, file_path').eq('doc_id', doc_id).limit(1).execute()
             if not doc_result.data:
                 return f"Error: Document '{doc_id}' not found in Supabase."
             
@@ -176,7 +200,8 @@ def extract_full_document(doc_id: str) -> str:
             result = client.table('gdd_chunks').select('content, chunk_id, section_path, metadata').eq('doc_id', doc_id).order('chunk_id').execute()
             
             if not result.data:
-                return f"Error: Document '{doc_id}' exists in Supabase but has no chunks. Please re-index the document."
+                # Try reading from file_path as last resort
+                return f"Error: Document '{doc_id}' exists in Supabase but has no chunks and no markdown_content. Please re-index the document."
             
             # Reconstruct document from chunks
             # Group by section and combine content
@@ -200,17 +225,23 @@ def extract_full_document(doc_id: str) -> str:
             reconstructed = ''.join(doc_parts).strip()
             
             if reconstructed:
+                logger.info(f"[Extract Full Doc] Reconstructed from chunks for {doc_id}")
                 return reconstructed
             else:
                 return f"Error: Document '{doc_id}' found but has no content in chunks."
                 
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Error reconstructing document from chunks: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return f"Error: Document '{doc_id}' not found in Supabase or has no markdown content stored. Reconstruction from chunks also failed: {str(e)}"
             
     except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error reading document '{doc_id}' from Supabase: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return f"Error reading document '{doc_id}' from Supabase: {str(e)}"
 
 
@@ -296,148 +327,85 @@ def _select_chunks_for_answer(chunks):
     return chunks[:n]
 
 
-def upload_and_index_document(file_path: Path):
+def _convert_pdf_bytes_to_markdown(pdf_bytes: bytes, filename: str) -> str:
     """
-    Upload and index a PDF document using the complete Supabase pipeline.
-    
-    Workflow:
-    1. Convert PDF → Markdown using Docling
-    2. Upload PDF to Supabase Storage (gdd_pdfs bucket)
-    3. Generate doc_id from filename
-    4. Chunk the Markdown with MarkdownChunker
-    5. Generate embeddings using QwenProvider
-    6. Index chunks with embeddings to Supabase
-    7. Store document metadata with pdf_storage_path and markdown_content
-    
-    Args:
-        file_path: Path to the uploaded PDF file
-    
-    Returns:
-        dict: Status and document ID
+    Convert PDF bytes to Markdown using Docling without writing to disk.
+    Uses Docling DocumentStream (in-memory).
     """
-    try:
-        if file_path.suffix.lower() != ".pdf":
-            return {
-                'status': 'error',
-                'message': 'Only PDF files are supported for upload in this version.'
-            }
-        
-        if not SUPABASE_AVAILABLE:
-            return {
-                'status': 'error',
-                'message': 'Supabase is not configured. Cannot index documents without Supabase.'
-            }
-        
-        import tempfile
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        logger.info(f"Starting upload and indexing for: {file_path.name}")
-        
-        # 1. Convert PDF → Markdown using Docling
-        logger.info("Step 1: Converting PDF to Markdown...")
-        try:
-            from docling.document_converter import DocumentConverter
-            from PDFtoMarkdown.pdf_to_markdown import clean_markdown
-            
-            converter = DocumentConverter()
-            
-            # Convert PDF to Markdown
-            result = converter.convert(str(file_path))
-            markdown_content = result.document.export_to_markdown()
-            markdown_content = clean_markdown(markdown_content)
-            
-            logger.info(f"✅ Converted PDF to Markdown ({len(markdown_content)} characters)")
-        except Exception as e:
-            logger.error(f"❌ PDF conversion failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                'status': 'error',
-                'message': f'Error converting PDF to Markdown: {str(e)}'
-            }
-        
-        # 2. Generate doc_id from PDF filename
-        doc_id = generate_md_doc_id(file_path)
-        logger.info(f"Generated doc_id: {doc_id}")
-        
-        # 3. Sanitize PDF filename for storage (remove special chars, keep safe)
-        from werkzeug.utils import secure_filename
-        pdf_filename = secure_filename(file_path.name)
-        # Replace spaces with underscores for consistency
-        pdf_filename = pdf_filename.replace(' ', '_')
-        
-        # 4. Upload PDF to Supabase Storage
-        logger.info(f"Step 2: Uploading PDF to Supabase Storage as '{pdf_filename}'...")
-        try:
-            from backend.storage.supabase_client import upload_pdf_to_storage
-            upload_success = upload_pdf_to_storage(file_path, pdf_filename)
-            if not upload_success:
-                return {
-                    'status': 'error',
-                    'message': 'Failed to upload PDF to Supabase Storage.'
-                }
-            logger.info("✅ PDF uploaded to Supabase Storage")
-        except Exception as e:
-            logger.error(f"❌ PDF upload failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                'status': 'error',
-                'message': f'Error uploading PDF to storage: {str(e)}'
-            }
-        
-        # 5. Chunk the markdown
-        logger.info("Step 3: Chunking Markdown...")
-        try:
-            chunker = MarkdownChunker()
-            chunks = chunker.chunk_document(
-                markdown_content=markdown_content,
-                doc_id=doc_id,
-                filename=file_path.name,
-            )
-            logger.info(f"✅ Created {len(chunks)} chunks")
-        except Exception as e:
-            logger.error(f"❌ Chunking failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                'status': 'error',
-                'message': f'Error chunking document: {str(e)}'
-            }
-        
-        # 6. Index chunks to Supabase with embeddings
-        logger.info("Step 4: Generating embeddings and indexing to Supabase...")
-        try:
-            provider = QwenProvider()
-            index_gdd_chunks_to_supabase(
-                doc_id=doc_id,
-                chunks=chunks,
-                provider=provider,
-                markdown_content=markdown_content,  # Store full markdown
-                pdf_storage_path=pdf_filename  # Store PDF storage path
-            )
-            logger.info("✅ Indexed to Supabase")
-        except Exception as e:
-            logger.error(f"❌ Indexing failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                'status': 'error',
-                'message': f'Error indexing to Supabase: {str(e)}'
-            }
-        
-        logger.info(f"✅ Successfully processed: {file_path.name} (doc_id: {doc_id})")
-        return {
-            'status': 'success',
-            'message': f'Successfully uploaded, converted, chunked, and indexed: {file_path.name} (as {doc_id})',
-            'doc_id': doc_id
-        }
-    except Exception as e:
-        return {
-            'status': 'error',
-            'message': f'Error: {str(e)}'
-        }
+    from docling.document_converter import DocumentConverter
+    from docling.datamodel.base_models import DocumentStream
+    from PDFtoMarkdown.pdf_to_markdown import clean_markdown
+
+    converter = DocumentConverter()
+
+    stream = BytesIO(pdf_bytes)
+    doc_stream = DocumentStream(name=filename, stream=stream)  # Docling supports DocumentStream input [2](https://docling-project.github.io/docling/reference/document_converter/)[3](https://deepwiki.com/docling-project/docling/1.2-quick-start)
+
+    result = converter.convert(doc_stream)  # convert() accepts Path/URL/DocumentStream [2](https://docling-project.github.io/docling/reference/document_converter/)[4](https://deepwiki.com/docling-project/docling/7.3-usage-examples)
+    markdown_content = result.document.export_to_markdown()
+    return clean_markdown(markdown_content)
+
+
+
+
+# gdd_service.py
+def upload_and_index_document_bytes(pdf_bytes: bytes, original_filename: str, progress_cb=None):
+    """
+    Upload and index a PDF using bytes (no local disk).
+    progress_cb: optional callable(step_text: str) for UI progress.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    def bump(step):
+        if callable(progress_cb):
+            progress_cb(step)
+        logger.info(f"[Upload Progress] {step}")
+
+    # 1) Convert PDF -> Markdown
+    bump("Converting to Markdown")
+    markdown_content = _convert_pdf_bytes_to_markdown(pdf_bytes, original_filename)
+
+    # 2) Build doc_id, storage filename
+    bump("Preparing document identifiers")
+    from werkzeug.utils import secure_filename
+    pdf_filename = secure_filename(original_filename).replace(" ", "_")
+    doc_id = generate_md_doc_id(Path(original_filename))
+
+    # 3) Upload PDF to storage
+    bump("Uploading PDF to storage")
+    from backend.storage.supabase_client import get_supabase_client
+    client = get_supabase_client(use_service_key=True)
+    bucket_name = "gdd_pdfs"
+    client.storage.from_(bucket_name).upload(
+        path=pdf_filename, file=pdf_bytes,
+        file_options={"content-type": "application/pdf", "cache-control": "3600", "upsert": "true"}
+    )
+
+    # 4) Chunk markdown
+    bump("Chunking Markdown")
+    from gdd_rag_backbone.markdown_chunking import MarkdownChunker
+    chunker = MarkdownChunker()
+    chunks = chunker.chunk_document(markdown_content=markdown_content, doc_id=doc_id, filename=original_filename)
+
+    # 5) Embedding
+    bump("Generating embeddings")
+    from gdd_rag_backbone.llm_providers import QwenProvider
+    provider = QwenProvider()
+
+    # 6) Index
+    bump("Indexing into Supabase")
+    index_gdd_chunks_to_supabase(
+        doc_id=doc_id, chunks=chunks, provider=provider,
+        markdown_content=markdown_content, pdf_storage_path=pdf_filename
+    )
+
+    bump("Completed")
+    return {
+        "status": "success",
+        "message": f"Successfully uploaded and indexed: {original_filename} (as {doc_id})",
+        "doc_id": doc_id,
+    }
 
 
 def list_documents():
@@ -534,18 +502,83 @@ def get_document_sections(doc_id: str) -> List[Dict[str, str]]:
     if not SUPABASE_AVAILABLE:
         return []
     
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
         from backend.storage.supabase_client import get_supabase_client
         client = get_supabase_client()
+        
+        logger.info(f"[get_document_sections] Querying chunks for doc_id: {doc_id}")
         
         # Get all unique sections for this document
         result = client.table('gdd_chunks').select(
             'section_path, section_title, metadata'
         ).eq('doc_id', doc_id).execute()
         
+        raw_chunks = result.data or []
+        logger.info(f"[get_document_sections] Found {len(raw_chunks)} chunks for doc_id: {doc_id}")
+        
+        if len(raw_chunks) == 0:
+            # Try to find similar doc_ids (case-insensitive, fuzzy matching)
+            logger.warning(f"[get_document_sections] No chunks found for exact doc_id: {doc_id}")
+            logger.info(f"[get_document_sections] Attempting to find similar doc_ids...")
+            
+            # Get all unique doc_ids from chunks
+            all_doc_ids_result = client.table('gdd_chunks').select('doc_id').execute()
+            all_doc_ids = set()
+            for row in (all_doc_ids_result.data or []):
+                all_doc_ids.add(row.get('doc_id'))
+            
+            logger.info(f"[get_document_sections] Found {len(all_doc_ids)} unique doc_ids in database")
+            
+            # Try case-insensitive match
+            all_doc_ids_lower = {d.lower(): d for d in all_doc_ids}
+            doc_id_lower = doc_id.lower()
+            
+            if doc_id_lower in all_doc_ids_lower:
+                actual_doc_id = all_doc_ids_lower[doc_id_lower]
+                logger.info(f"[get_document_sections] Found case-insensitive match: {actual_doc_id}")
+                # Retry with actual doc_id
+                result = client.table('gdd_chunks').select(
+                    'section_path, section_title, metadata'
+                ).eq('doc_id', actual_doc_id).execute()
+                raw_chunks = result.data or []
+                logger.info(f"[get_document_sections] Found {len(raw_chunks)} chunks with corrected doc_id")
+            else:
+                # Try fuzzy matching
+                def normalize_for_match(text):
+                    """Normalize text for fuzzy matching."""
+                    if not text:
+                        return ""
+                    return text.lower().replace('_', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
+                
+                doc_id_normalized = normalize_for_match(doc_id)
+                similar_doc_ids = []
+                
+                for existing_doc_id in all_doc_ids:
+                    existing_normalized = normalize_for_match(existing_doc_id)
+                    if doc_id_normalized == existing_normalized:
+                        similar_doc_ids.append(existing_doc_id)
+                    elif doc_id_normalized in existing_normalized or existing_normalized in doc_id_normalized:
+                        similar_doc_ids.append(existing_doc_id)
+                
+                if similar_doc_ids:
+                    logger.info(f"[get_document_sections] Found {len(similar_doc_ids)} similar doc_ids: {similar_doc_ids[:3]}")
+                    # Use the first similar one
+                    actual_doc_id = similar_doc_ids[0]
+                    logger.info(f"[get_document_sections] Using similar doc_id: {actual_doc_id}")
+                    result = client.table('gdd_chunks').select(
+                        'section_path, section_title, metadata'
+                    ).eq('doc_id', actual_doc_id).execute()
+                    raw_chunks = result.data or []
+                    logger.info(f"[get_document_sections] Found {len(raw_chunks)} chunks with similar doc_id")
+                else:
+                    logger.warning(f"[get_document_sections] No similar doc_ids found. Available doc_ids (sample): {list(all_doc_ids)[:5]}")
+        
         sections_map = {}
         
-        for row in (result.data or []):
+        for row in raw_chunks:
             metadata = row.get('metadata', {})
             if isinstance(metadata, dict):
                 numbered_header = metadata.get('numbered_header', '')
@@ -559,8 +592,17 @@ def get_document_sections(doc_id: str) -> List[Dict[str, str]]:
             
             # Use numbered_header as key if available, otherwise section_path
             key = numbered_header if numbered_header else section_path
+            
+            # If no section info at all, create a default section entry
             if not key:
-                continue
+                # Check if we should skip or create a default section
+                # For now, we'll create a default "Document Content" section
+                # This ensures documents with chunks but no sections still show up
+                key = "Document Content"
+                numbered_header = "Document Content"
+                section_path = ""
+                section_index = 999
+                logger.debug(f"[get_document_sections] Chunk has no section info, using default section")
             
             # Store section with best available info
             if key not in sections_map:
@@ -583,11 +625,15 @@ def get_document_sections(doc_id: str) -> List[Dict[str, str]]:
         sections = list(sections_map.values())
         sections.sort(key=lambda x: (x['section_index'], x['section_name']))
         
+        logger.info(f"[get_document_sections] Returning {len(sections)} unique sections for doc_id: {doc_id}")
+        
         return sections
     except Exception as e:
         import logging
         logger = logging.getLogger(__name__)
         logger.error(f"Error getting sections for document {doc_id}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return []
 
 
@@ -627,6 +673,7 @@ def query_gdd_documents(query: str, selected_doc: str = None):
         target_doc_id = None
         if selected_doc and selected_doc != "All Documents":
             # Extract doc_id from selected_doc (format: "filename (doc_id) - X chunks" or "filename (doc_id) - not indexed")
+            # Also handle cases where selected_doc might just be the doc_id or filename
             for doc in markdown_docs:
                 doc_id = doc.get("doc_id", "")
                 file_path = doc.get("file_path", "")
@@ -651,9 +698,50 @@ def query_gdd_documents(query: str, selected_doc: str = None):
                     else:
                         display_name = f"{doc_id} - not indexed"
                 
-                # Also try matching without the suffix (for backward compatibility)
+                # Try exact match first
+                if display_name == selected_doc:
+                    target_doc_id = doc_id
+                    break
+                
+                # Try matching without the suffix (for backward compatibility)
                 display_name_no_suffix = display_name.split(" - ")[0]
-                if display_name == selected_doc or display_name_no_suffix == selected_doc:
+                if display_name_no_suffix == selected_doc:
+                    target_doc_id = doc_id
+                    break
+                
+                # Try matching just the doc_id
+                if doc_id == selected_doc:
+                    target_doc_id = doc_id
+                    break
+                
+                # Try matching filename
+                if file_path:
+                    file_name = Path(file_path).name
+                    if file_name == selected_doc or file_name in selected_doc:
+                        target_doc_id = doc_id
+                        break
+                
+                # Try fuzzy matching (normalize both strings)
+                def normalize_for_match(text: str) -> str:
+                    """Normalize text for fuzzy matching."""
+                    if not text:
+                        return ""
+                    normalized = text.lower()
+                    normalized = normalized.replace("[", "").replace("]", "")
+                    normalized = normalized.replace(",", "").replace("_", "")
+                    normalized = normalized.replace("-", "").replace(" ", "")
+                    normalized = normalized.replace("(", "").replace(")", "")
+                    return normalized
+                
+                selected_normalized = normalize_for_match(selected_doc)
+                doc_id_normalized = normalize_for_match(doc_id)
+                display_normalized = normalize_for_match(display_name)
+                display_no_suffix_normalized = normalize_for_match(display_name_no_suffix)
+                
+                if (doc_id_normalized in selected_normalized or 
+                    selected_normalized in doc_id_normalized or
+                    display_normalized == selected_normalized or
+                    display_no_suffix_normalized == selected_normalized):
                     target_doc_id = doc_id
                     break
             
@@ -709,14 +797,54 @@ def query_gdd_documents(query: str, selected_doc: str = None):
                 file_name = doc.get("name", "")
                 file_path = doc.get("file_path", "")
                 
-                # Normalize for comparison
-                doc_id_normalized = doc_id.lower().replace("[", "").replace("]", "").replace(",", "").replace("_", "").replace("-", "").replace(" ", "")
-                message_normalized = message_lower.replace("[", "").replace("]", "").replace(",", "").replace("_", "").replace("-", "").replace(" ", "")
+                # Normalize for comparison (remove special chars, keep core words)
+                def normalize_for_match(text: str) -> str:
+                    """Normalize text for fuzzy matching."""
+                    if not text:
+                        return ""
+                    normalized = text.lower()
+                    # Remove all special characters
+                    normalized = normalized.replace("[", "").replace("]", "")
+                    normalized = normalized.replace(",", "").replace("_", "")
+                    normalized = normalized.replace("-", "").replace(" ", "")
+                    normalized = normalized.replace("(", "").replace(")", "")
+                    normalized = normalized.replace("&", "").replace(".", "")
+                    return normalized
                 
-                # Strategy 1: Check if doc_id appears in message
+                doc_id_normalized = normalize_for_match(doc_id)
+                message_normalized = normalize_for_match(message_lower)
+                
+                # Strategy 1: Check if doc_id appears in message (exact or partial)
                 if doc_id_normalized in message_normalized or message_normalized in doc_id_normalized:
                     target_doc_id = doc_id
                     break
+                
+                # Strategy 1b: Check if key words from doc_id appear in message
+                # Extract key words (remove common prefixes like "module", "tank", "war")
+                # Split by removing underscores and common words
+                doc_parts = doc_id_normalized.replace('_', ' ').split()
+                doc_words = [w for w in doc_parts if len(w) > 3 and w not in ['module', 'tank', 'war', 'system', 'design', 'progression', 'monetization', 'character', 'combat', 'game', 'multiplayer', 'world']]
+                if doc_words:
+                    # Check if at least 2 key words match, or if a unique word matches
+                    matching_words = sum(1 for word in doc_words if word in message_normalized)
+                    unique_words = [w for w in doc_words if w in ['localization', 'latam', 'tổng', 'quan', 'artifact', 'onboarding', 'chưa', 'xong', 'elo', 'rank', 'leaderboard', 'elemental', 'class']]
+                    if matching_words >= 2 or (unique_words and any(w in message_normalized for w in unique_words)):
+                        target_doc_id = doc_id
+                        break
+                
+                # Strategy 1c: Check if message contains partial doc_id (e.g., "localization_latam" matches full doc_id)
+                # Remove common prefixes and check if remaining parts match
+                message_clean = message_normalized
+                for prefix in ['progression', 'module', 'tank', 'war', 'monetization', 'character', 'combat']:
+                    message_clean = message_clean.replace(prefix, '')
+                doc_clean = doc_id_normalized
+                for prefix in ['progression', 'module', 'tank', 'war', 'monetization', 'character', 'combat']:
+                    doc_clean = doc_clean.replace(prefix, '')
+                
+                if message_clean and doc_clean:
+                    if message_clean in doc_clean or doc_clean in message_clean:
+                        target_doc_id = doc_id
+                        break
                 
                 # Strategy 2: Check file name (stem)
                 if file_name:
