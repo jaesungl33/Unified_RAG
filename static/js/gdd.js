@@ -94,6 +94,26 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
     
+    
+    async function parseJsonSafe(response) {
+        const raw = await response.text();   // Always read as text first
+        let data = null;
+
+        if (raw && raw.trim().length > 0) {
+            try {
+                data = JSON.parse(raw);
+            } catch {
+                // Not JSON (e.g., HTML error page) — wrap it
+                data = { status: response.ok ? 'success' : 'error', message: raw };
+            }
+        } else {
+            // Empty body — fabricate a small, safe payload
+            data = { status: response.ok ? 'success' : 'error', message: response.ok ? 'Uploaded' : 'Empty response' };
+        }
+        return data;
+    }
+
+
     // Upload file
     uploadBtn.addEventListener('click', uploadFile);
     
@@ -142,7 +162,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 selected_doc: selectedDocument
             })
         })
-        .then(response => response.json())
+        .then(parseJsonSafe)
         .then(data => {
             removeTypingIndicator(typingIndicator);
             if (data.status === 'error') {
@@ -159,46 +179,81 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
+    
     function uploadFile() {
         const file = fileUpload.files[0];
         if (!file) {
             alert('Please select a file');
             return;
         }
-        
+
         uploadStatus.style.display = 'block';
-        uploadStatus.textContent = 'Uploading...';
-        
+        uploadStatus.style.color = '#0b5ed7'; // neutral while in progress
+        uploadStatus.textContent = 'Uploading file…';
+
         const formData = new FormData();
         formData.append('file', file);
-        
-        fetch('/api/gdd/upload', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
+
+        fetch('/api/gdd/upload', { method: 'POST', body: formData })
+            .then(parseJsonSafe)
+            .then(data => {
             if (data.status === 'error') {
-                uploadStatus.textContent = 'Error: ' + (data.message || data.error || 'Upload failed');
+                uploadStatus.textContent = 'Error: ' + (data.message || 'Upload failed');
                 uploadStatus.style.color = '#d32f2f';
-                uploadStatus.style.display = 'block';
-            } else {
-                uploadStatus.textContent = data.message || 'Upload successful';
-                uploadStatus.style.color = '#2e7d32';
-                uploadStatus.style.display = 'block';
-                loadDocuments();
-                // Clear file input
-                fileUpload.value = '';
+                return;
             }
+
+            if (data.status !== 'accepted' || !data.job_id) {
+                uploadStatus.textContent = 'Unexpected response; upload not started.';
+                uploadStatus.style.color = '#d32f2f';
+                return;
+            }
+
+            const jobId = data.job_id;
+            uploadStatus.textContent = data.step || 'Uploading file…';
+
+            // Poll status every 1 second
+            const interval = setInterval(() => {
+                fetch(`/api/gdd/upload/status?job_id=${encodeURIComponent(jobId)}`)
+                    .then(parseJsonSafe)
+                    .then(statusData => {
+                        if (!statusData || !statusData.status) return;
+
+                        // Update the one-liner
+                        const stepText = statusData.step || 'Working…';
+                        uploadStatus.textContent = stepText;
+
+                        if (statusData.status === 'success') {
+                            uploadStatus.style.color = '#2e7d32';
+                            uploadStatus.textContent = statusData.message || 'Upload complete';
+                            clearInterval(interval);
+                            fileUpload.value = '';
+                            // Refresh document list
+                        loadDocuments();
+                        } else if (statusData.status === 'error') {
+                            uploadStatus.style.color = '#d32f2f';
+                            uploadStatus.textContent = 'Error: ' + (statusData.message || 'Upload failed');
+                            clearInterval(interval);
+                        } else {
+                            // status === 'running' → continue polling
+                        }
+                })
+            .catch(err => {
+                // Keep polling; transient network errors can happen
+                console.warn('Status poll error:', err);
+            });
+            }, 1000);
         })
         .catch(error => {
             uploadStatus.textContent = 'Error: ' + error.message;
+            uploadStatus.style.color = '#d32f2f';
         });
     }
+
     
     function loadDocuments() {
         fetch('/api/gdd/documents')
-            .then(response => response.json())
+            .then(parseJsonSafe)
             .then(data => {
                 // Store all documents data for filtering
                 allDocumentsData = data;
@@ -753,13 +808,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         console.log('[Section Dropdown] Loading sections for doc_id:', docId);
         fetch(`/api/gdd/sections?doc_id=${encodeURIComponent(docId)}`)
-            .then(response => {
-                console.log('[Section Dropdown] Response status:', response.status, response.statusText);
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                return response.json();
-            })
+            .then(parseJsonSafe)
             .then(data => {
                 console.log('[Section Dropdown] Received sections data:', data);
                 if (data.sections && Array.isArray(data.sections)) {

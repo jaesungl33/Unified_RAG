@@ -16,3 +16,4 @@ result = client.table('gdd_chunks').select('chunk_id, doc_id').eq('doc_id', 'Com
 print('Chunks for Combat_Module_Tank_War_Mobile_Skill_Control_System:')
 for c in (result.data or []):
     print(f'  chunk_id: {c["chunk_id"]}')
+

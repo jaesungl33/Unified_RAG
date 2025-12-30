@@ -10,6 +10,65 @@ from pathlib import Path
 from dotenv import load_dotenv
 import logging
 
+import uuid
+import threading
+from time import sleep
+from backend.gdd_service import upload_and_index_document_bytes
+
+
+# --- Simple in-memory progress tracking and job execution ---
+import uuid
+import threading
+from time import sleep
+
+# Global dict: job_id -> progress info
+UPLOAD_JOBS = {}  # { job_id: {"status": "running|success|error", "step": "...", "message": "", "doc_id": None } }
+JOBS_LOCK = threading.Lock()
+
+def new_job():
+    job_id = uuid.uuid4().hex
+    with JOBS_LOCK:
+        UPLOAD_JOBS[job_id] = {"status": "running", "step": "Uploading file", "message": "", "doc_id": None}
+    return job_id
+
+def update_job(job_id, step=None, status=None, message=None, doc_id=None):
+    with JOBS_LOCK:
+        job = UPLOAD_JOBS.get(job_id)
+        if not job:
+            return
+        if step is not None:
+            job["step"] = step
+        if status is not None:
+            job["status"] = status
+        if message is not None:
+            job["message"] = message
+        if doc_id is not None:
+            job["doc_id"] = doc_id
+
+def get_job(job_id):
+    with JOBS_LOCK:
+        return UPLOAD_JOBS.get(job_id, None)
+
+
+
+def run_upload_pipeline_async(job_id, pdf_bytes, filename):
+    # Progress callback used by gdd_service
+    def progress_cb(step_text):
+        update_job(job_id, step=step_text)
+
+    try:
+        update_job(job_id, step="Converting to Markdown")
+        # Modify gdd_service.upload_and_index_document_bytes to accept progress_cb
+        result = upload_and_index_document_bytes(pdf_bytes, filename, progress_cb=progress_cb)
+        # result is dict: {"status": "success|error", "message": "...", "doc_id": "..."}
+        if result.get("status") == "success":
+            update_job(job_id, status="success", step="Completed", message=result.get("message"), doc_id=result.get("doc_id"))
+        else:
+            update_job(job_id, status="error", step="Failed", message=result.get("message"))
+    except Exception as e:
+        update_job(job_id, status="error", step="Failed", message=str(e))
+
+
 # Load environment variables
 load_dotenv()
 
@@ -188,28 +247,53 @@ def gdd_query():
         return jsonify({'error': str(e), 'status': 'error'}), 500
 
 
+@app.route('/api/gdd/upload/status', methods=['GET'])
+def gdd_upload_status():
+    """Poll the current status of an upload job."""
+    job_id = request.args.get('job_id')
+    if not job_id:
+        return jsonify({'status': 'error', 'message': 'job_id required'}), 400
+
+    job = get_job(job_id)
+    if not job:
+        return jsonify({'status': 'error', 'message': 'Unknown job_id'}), 404
+
+    # Always JSON
+    return jsonify({
+        'status': job['status'],  # running | success | error
+        'step': job['step'],
+        'message': job['message'],
+        'doc_id': job['doc_id'],
+        'job_id': job_id,
+    }), 200
+
+
 @app.route('/api/gdd/upload', methods=['POST'])
 def gdd_upload():
-    """Handle document uploads for GDD RAG (diskless: bytes -> Docling -> Supabase)"""
+    """Start an async upload + index job and return a job_id immediately."""
     try:
         if not gdd_service_available:
-            return jsonify({'error': 'GDD service not available'}), 500
+            return jsonify({'status': 'error', 'message': 'GDD service not available'}), 500
 
         if 'file' not in request.files:
-            return jsonify({'error': 'No file provided', 'status': 'error'}), 400
+            return jsonify({'status': 'error', 'message': 'No file provided'}), 400
 
         file = request.files['file']
         if not file or file.filename == '':
-            return jsonify({'error': 'No file selected', 'status': 'error'}), 400
+            return jsonify({'status': 'error', 'message': 'No file selected'}), 400
 
-        # DISKLESS: read bytes and pass into bytes-based pipeline
         pdf_bytes = file.read()
-        result = upload_and_index_document_bytes(pdf_bytes, file.filename)
-        return jsonify(result)
+        job_id = new_job()
+        # Start background thread
+        t = threading.Thread(target=run_upload_pipeline_async, args=(job_id, pdf_bytes, file.filename), daemon=True)
+        t.start()
+
+        # Respond immediately with job_id
+        return jsonify({'status': 'accepted', 'job_id': job_id, 'step': 'Uploading file'}), 202
 
     except Exception as e:
         app.logger.error(f"Error in GDD upload: {e}")
-        return jsonify({'error': str(e), 'status': 'error'}), 500
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 
