@@ -8,6 +8,7 @@ import sys
 import asyncio
 import shutil
 from pathlib import Path
+from typing import List, Dict, Any, Optional
 
 # Add project root to path for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -25,7 +26,7 @@ try:
     SUPABASE_AVAILABLE = USE_SUPABASE
 except ImportError:
     SUPABASE_AVAILABLE = False
-    print("Warning: Supabase storage not available, using local file storage")
+    print("ERROR: Supabase storage not available. This app requires Supabase to function.")
 
 # Import gdd_rag_backbone (now included in unified_rag_app)
 try:
@@ -34,10 +35,7 @@ try:
         QwenProvider,
         make_embedding_func,
     )
-    from gdd_rag_backbone.rag_backend.markdown_chunk_qa import (
-        get_markdown_top_chunks,
-        list_markdown_indexed_docs,
-    )
+    # Removed get_markdown_top_chunks - using Supabase only, no local storage fallback
     from gdd_rag_backbone.scripts.chunk_markdown_files import (
         generate_doc_id as generate_md_doc_id,
         save_chunks as save_md_chunks,
@@ -46,11 +44,9 @@ try:
     from gdd_rag_backbone.markdown_chunking import MarkdownChunker
     GDD_RAG_BACKBONE_AVAILABLE = True
     
-    # Ensure directories exist (relative to unified_rag_app)
+    # Define directory paths (but don't create them - not needed for Render)
     DEFAULT_DOCS_DIR = PROJECT_ROOT / "docs"
     DEFAULT_WORKING_DIR = PROJECT_ROOT / "rag_storage"
-    DEFAULT_DOCS_DIR.mkdir(parents=True, exist_ok=True)
-    DEFAULT_WORKING_DIR.mkdir(parents=True, exist_ok=True)
 except ImportError as e:
     import sys
     import traceback
@@ -60,6 +56,162 @@ except ImportError as e:
     # Set defaults to avoid NameError
     DEFAULT_DOCS_DIR = PROJECT_ROOT / "docs"
     DEFAULT_WORKING_DIR = PROJECT_ROOT / "rag_storage"
+
+# Markdown directory path
+MARKDOWN_DIR = PROJECT_ROOT / "gdd_data" / "markdown"
+
+
+def _generate_doc_id_from_filename(filename: Path) -> str:
+    """
+    Generate document ID from filename (same logic as chunk_markdown_files.py).
+    
+    Args:
+        filename: Markdown file path
+    
+    Returns:
+        Document ID (sanitized filename without extension)
+    """
+    # Remove extension and sanitize
+    doc_id = filename.stem
+    # Replace spaces and special chars with underscores
+    doc_id = doc_id.replace(" ", "_").replace("[", "").replace("]", "")
+    doc_id = doc_id.replace("-", "_").replace(",", "_")
+    # Remove multiple underscores
+    while "__" in doc_id:
+        doc_id = doc_id.replace("__", "_")
+    return doc_id.strip("_")
+
+
+def _find_markdown_file_from_doc_id(doc_id: str) -> Optional[Path]:
+    """
+    DEPRECATED: No longer uses local files. Always returns None.
+    Markdown content is now stored in Supabase.
+    
+    Args:
+        doc_id: Document ID
+    
+    Returns:
+        None (local files are no longer used)
+    """
+    # Local files are no longer used - all content is in Supabase
+    return None
+
+
+def list_documents_from_markdown() -> List[Dict[str, Any]]:
+    """
+    List all documents from Supabase (no local file dependency).
+    Uses Supabase as the only source of truth.
+    
+    Returns:
+        List of document metadata dictionaries
+    """
+    # Get documents directly from Supabase (no local file scanning)
+    if not SUPABASE_AVAILABLE:
+        return []
+    
+    try:
+        supabase_docs_list = list_gdd_documents_supabase()
+        documents = []
+        
+        for doc in supabase_docs_list:
+            doc_id = doc.get("doc_id", "")
+            chunks_count = doc.get("chunks_count", 0)
+            name = doc.get("name", doc_id)
+            file_path = doc.get("file_path")  # May be None, that's OK
+            
+            documents.append({
+                'doc_id': doc_id,
+                'name': name,
+                'file_path': file_path,  # May be None - stored for reference only
+                'chunks_count': chunks_count,
+                'status': 'ready' if chunks_count > 0 else 'indexed'
+            })
+        
+        return documents
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Warning: Could not load documents from Supabase: {e}")
+        return []
+
+
+def extract_full_document(doc_id: str) -> str:
+    """
+    Extract full document content from Supabase (no local file dependency).
+    
+    If markdown_content is not stored, reconstructs document from chunks.
+    
+    Args:
+        doc_id: Document ID
+    
+    Returns:
+        Full document content as string, or error message if not found
+    """
+    if not SUPABASE_AVAILABLE:
+        return f"Error: Supabase is not available. Cannot extract document '{doc_id}'."
+    
+    try:
+        from backend.storage.supabase_client import get_gdd_document_markdown, get_gdd_document_pdf_url, get_supabase_client
+        
+        # PRIORITY 1: Check if PDF exists in Supabase Storage - if yes, return PDF embed
+        pdf_url = get_gdd_document_pdf_url(doc_id)
+        if pdf_url:
+            return f'**PDF Document: {doc_id}**\n\n[📄 View PDF]({pdf_url})\n\n<iframe src="{pdf_url}" width="100%" height="800px" style="border: 1px solid #ccc;"></iframe>'
+        
+        # PRIORITY 2: Try to get markdown content from gdd_documents table
+        content = get_gdd_document_markdown(doc_id)
+        if content:
+            return content
+        
+        # PRIORITY 3 (Fallback): Reconstruct document from chunks if markdown_content not stored
+        try:
+            client = get_supabase_client()
+            
+            # First check if document exists
+            doc_result = client.table('gdd_documents').select('doc_id').eq('doc_id', doc_id).limit(1).execute()
+            if not doc_result.data:
+                return f"Error: Document '{doc_id}' not found in Supabase."
+            
+            # Get all chunks for this document, ordered by chunk_id
+            result = client.table('gdd_chunks').select('content, chunk_id, section_path, metadata').eq('doc_id', doc_id).order('chunk_id').execute()
+            
+            if not result.data:
+                return f"Error: Document '{doc_id}' exists in Supabase but has no chunks. Please re-index the document."
+            
+            # Reconstruct document from chunks
+            # Group by section and combine content
+            sections = {}
+            for chunk in result.data:
+                section_path = chunk.get('section_path', 'Unknown')
+                content = chunk.get('content', '')
+                
+                if section_path not in sections:
+                    sections[section_path] = []
+                sections[section_path].append(content)
+            
+            # Build document
+            doc_parts = []
+            for section_path, contents in sorted(sections.items()):
+                if section_path and section_path != 'Unknown':
+                    doc_parts.append(f"## {section_path}\n")
+                doc_parts.append('\n\n'.join(contents))
+                doc_parts.append('\n\n')
+            
+            reconstructed = ''.join(doc_parts).strip()
+            
+            if reconstructed:
+                return reconstructed
+            else:
+                return f"Error: Document '{doc_id}' found but has no content in chunks."
+                
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error reconstructing document from chunks: {e}")
+            return f"Error: Document '{doc_id}' not found in Supabase or has no markdown content stored. Reconstruction from chunks also failed: {str(e)}"
+            
+    except Exception as e:
+        return f"Error reading document '{doc_id}' from Supabase: {str(e)}"
 
 
 def _detect_question_language(text: str) -> str:
@@ -146,16 +298,19 @@ def _select_chunks_for_answer(chunks):
 
 def upload_and_index_document(file_path: Path):
     """
-    Upload and index a PDF document using the new markdown pipeline.
+    Upload and index a PDF document using the complete Supabase pipeline.
     
     Workflow:
-    1. Save uploaded PDF into DEFAULT_DOCS_DIR
-    2. Convert PDF → Markdown using the PDFtoMarkdown/pdf_to_markdown.py helper
-    3. Chunk the resulting Markdown with MarkdownChunker into rag_storage_md/
-    4. Index the chunks with embeddings into rag_storage_md_indexed/
+    1. Convert PDF → Markdown using Docling
+    2. Upload PDF to Supabase Storage (gdd_pdfs bucket)
+    3. Generate doc_id from filename
+    4. Chunk the Markdown with MarkdownChunker
+    5. Generate embeddings using QwenProvider
+    6. Index chunks with embeddings to Supabase
+    7. Store document metadata with pdf_storage_path and markdown_content
     
     Args:
-        file_path: Path to the uploaded file
+        file_path: Path to the uploaded PDF file
     
     Returns:
         dict: Status and document ID
@@ -167,94 +322,117 @@ def upload_and_index_document(file_path: Path):
                 'message': 'Only PDF files are supported for upload in this version.'
             }
         
-        # 1. Save PDF into docs directory (for reference/backups)
-        target_path = DEFAULT_DOCS_DIR / file_path.name
-        shutil.copy(str(file_path), str(target_path))
-        
-        # 2. Convert PDF → Markdown (for now, skip PDF conversion - documents should be pre-converted)
-        # TODO: Add PDF to Markdown conversion capability if needed
-        # For now, assume documents are already in markdown format or skip this step
-        pdf_md_dir = PROJECT_ROOT / "markdown"
-        pdf_md_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Skip PDF conversion for now - return error if PDF upload is attempted
-        return {
-            'status': 'error',
-            'message': 'PDF upload is not yet supported in the unified app. Please use pre-converted markdown files or implement PDF conversion.'
-        }
-        
-        # Use the existing CLI helper's convert_all function
-        md_paths = pdf2md.convert_all(
-            input_path=target_path,
-            output_dir=pdf_md_dir,
-            ocr_langs=None,
-            overwrite=True,
-        )
-        if not md_paths:
+        if not SUPABASE_AVAILABLE:
             return {
                 'status': 'error',
-                'message': 'Error: PDF to Markdown conversion failed (no output files).'
+                'message': 'Supabase is not configured. Cannot index documents without Supabase.'
             }
         
-        md_path = md_paths[0]
+        import tempfile
+        import logging
+        logger = logging.getLogger(__name__)
         
-        # 3. Chunk the markdown into rag_storage_md/
-        markdown_content = md_path.read_text(encoding="utf-8")
-        doc_id = generate_md_doc_id(md_path)
+        logger.info(f"Starting upload and indexing for: {file_path.name}")
         
-        chunker = MarkdownChunker()
-        chunks = chunker.chunk_document(
-            markdown_content=markdown_content,
-            doc_id=doc_id,
-            filename=str(md_path),
-        )
-        
-        md_output_dir = PROJECT_ROOT / "rag_storage_md" / doc_id
-        save_md_chunks(chunks, doc_id, md_output_dir)
-        
-        # 4. Index chunks - use Supabase if available, otherwise local storage
-        provider = QwenProvider()
-        
-        if SUPABASE_AVAILABLE:
-            # Index to Supabase
-            try:
-                index_gdd_chunks_to_supabase(
-                    doc_id=doc_id,
-                    chunks=chunks,
-                    provider=provider
-                )
-                return {
-                    'status': 'success',
-                    'message': f'Successfully converted, chunked, and indexed to Supabase: {file_path.name} (as {doc_id})',
-                    'doc_id': doc_id
-                }
-            except Exception as e:
-                # Fallback to local storage if Supabase fails
-                print(f"Warning: Supabase indexing failed, falling back to local storage: {e}")
-                embedding_func = make_embedding_func(provider)
-                asyncio.run(index_chunks_for_doc(
-                    doc_id=doc_id,
-                    embedding_func=embedding_func,
-                    dry_run=False,
-                ))
-                return {
-                    'status': 'success',
-                    'message': f'Successfully converted, chunked, and indexed (local storage): {file_path.name} (as {doc_id})',
-                    'doc_id': doc_id
-                }
-        else:
-            # Use local storage
-            embedding_func = make_embedding_func(provider)
-            asyncio.run(index_chunks_for_doc(
-                doc_id=doc_id,
-                embedding_func=embedding_func,
-                dry_run=False,
-            ))
+        # 1. Convert PDF → Markdown using Docling
+        logger.info("Step 1: Converting PDF to Markdown...")
+        try:
+            from docling.document_converter import DocumentConverter
+            from PDFtoMarkdown.pdf_to_markdown import clean_markdown
+            
+            converter = DocumentConverter()
+            
+            # Convert PDF to Markdown
+            result = converter.convert(str(file_path))
+            markdown_content = result.document.export_to_markdown()
+            markdown_content = clean_markdown(markdown_content)
+            
+            logger.info(f"✅ Converted PDF to Markdown ({len(markdown_content)} characters)")
+        except Exception as e:
+            logger.error(f"❌ PDF conversion failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
-                'status': 'success',
-                'message': f'Successfully converted, chunked, and indexed: {file_path.name} (as {doc_id})',
-                'doc_id': doc_id
+                'status': 'error',
+                'message': f'Error converting PDF to Markdown: {str(e)}'
             }
+        
+        # 2. Generate doc_id from PDF filename
+        doc_id = generate_md_doc_id(file_path)
+        logger.info(f"Generated doc_id: {doc_id}")
+        
+        # 3. Sanitize PDF filename for storage (remove special chars, keep safe)
+        from werkzeug.utils import secure_filename
+        pdf_filename = secure_filename(file_path.name)
+        # Replace spaces with underscores for consistency
+        pdf_filename = pdf_filename.replace(' ', '_')
+        
+        # 4. Upload PDF to Supabase Storage
+        logger.info(f"Step 2: Uploading PDF to Supabase Storage as '{pdf_filename}'...")
+        try:
+            from backend.storage.supabase_client import upload_pdf_to_storage
+            upload_success = upload_pdf_to_storage(file_path, pdf_filename)
+            if not upload_success:
+                return {
+                    'status': 'error',
+                    'message': 'Failed to upload PDF to Supabase Storage.'
+                }
+            logger.info("✅ PDF uploaded to Supabase Storage")
+        except Exception as e:
+            logger.error(f"❌ PDF upload failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'status': 'error',
+                'message': f'Error uploading PDF to storage: {str(e)}'
+            }
+        
+        # 5. Chunk the markdown
+        logger.info("Step 3: Chunking Markdown...")
+        try:
+            chunker = MarkdownChunker()
+            chunks = chunker.chunk_document(
+                markdown_content=markdown_content,
+                doc_id=doc_id,
+                filename=file_path.name,
+            )
+            logger.info(f"✅ Created {len(chunks)} chunks")
+        except Exception as e:
+            logger.error(f"❌ Chunking failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'status': 'error',
+                'message': f'Error chunking document: {str(e)}'
+            }
+        
+        # 6. Index chunks to Supabase with embeddings
+        logger.info("Step 4: Generating embeddings and indexing to Supabase...")
+        try:
+            provider = QwenProvider()
+            index_gdd_chunks_to_supabase(
+                doc_id=doc_id,
+                chunks=chunks,
+                provider=provider,
+                markdown_content=markdown_content,  # Store full markdown
+                pdf_storage_path=pdf_filename  # Store PDF storage path
+            )
+            logger.info("✅ Indexed to Supabase")
+        except Exception as e:
+            logger.error(f"❌ Indexing failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'status': 'error',
+                'message': f'Error indexing to Supabase: {str(e)}'
+            }
+        
+        logger.info(f"✅ Successfully processed: {file_path.name} (doc_id: {doc_id})")
+        return {
+            'status': 'success',
+            'message': f'Successfully uploaded, converted, chunked, and indexed: {file_path.name} (as {doc_id})',
+            'doc_id': doc_id
+        }
     except Exception as e:
         return {
             'status': 'error',
@@ -265,7 +443,7 @@ def upload_and_index_document(file_path: Path):
 def list_documents():
     """
     List all indexed GDD documents.
-    Uses Supabase if available, otherwise falls back to local storage.
+    Uses markdown directory as source of truth, with Supabase for chunk counts.
     
     Returns:
         list: List of document metadata dictionaries
@@ -276,55 +454,11 @@ def list_documents():
     logger.info("=" * 60)
     logger.info("list_documents() called")
     logger.info(f"SUPABASE_AVAILABLE: {SUPABASE_AVAILABLE}")
-    logger.info(f"GDD_RAG_BACKBONE_AVAILABLE: {GDD_RAG_BACKBONE_AVAILABLE}")
     
     try:
-        if SUPABASE_AVAILABLE:
-            logger.info("Attempting to load from Supabase...")
-            # Try Supabase first
-            try:
-                docs = list_gdd_documents_supabase()
-                logger.info(f"list_gdd_documents_supabase() returned {len(docs)} documents")
-                if docs:
-                    logger.info(f"[OK] Successfully loaded {len(docs)} documents from Supabase")
-                    if len(docs) > 0:
-                        logger.info(f"Sample document: {docs[0].get('name', 'N/A')}")
-                    return docs
-                else:
-                    logger.warning("⚠️ Supabase returned empty list, trying local storage")
-            except Exception as e:
-                import traceback
-                logger.error(f"❌ Failed to load from Supabase: {e}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
-        else:
-            logger.warning("SUPABASE_AVAILABLE is False, skipping Supabase")
-        
-        # Fallback to local storage (only if gdd_rag_backbone is available)
-        if not GDD_RAG_BACKBONE_AVAILABLE:
-            logger.warning("⚠️ Cannot fallback to local storage - gdd_rag_backbone not available")
-            logger.info("=" * 60)
-            return []
-        
-        logger.info("Attempting to load from local storage...")
-        markdown_docs = list_markdown_indexed_docs()
-        logger.info(f"list_markdown_indexed_docs() returned {len(markdown_docs)} documents")
-        
-        documents = []
-        for doc in sorted(markdown_docs, key=lambda x: x["doc_id"]):
-            doc_id = doc["doc_id"]
-            chunks_count = doc.get("chunks_count", 0)
-            file_path = doc.get("file_path", "")
-            file_name = Path(file_path).name if file_path else doc_id
-            
-            documents.append({
-                'doc_id': doc_id,
-                'name': file_name,
-                'file_path': file_path,
-                'chunks_count': chunks_count,
-                'status': 'ready' if chunks_count > 0 else 'indexed'
-            })
-        
-        logger.info(f"✅ Loaded {len(documents)} documents from local storage")
+        # Get documents from Supabase (no local file dependency)
+        documents = list_documents_from_markdown()
+        logger.info(f"✅ Loaded {len(documents)} documents from Supabase")
         logger.info("=" * 60)
         return documents
     except Exception as e:
@@ -338,44 +472,40 @@ def list_documents():
 def get_document_options():
     """
     Get list of document options for dropdown.
-    Uses Supabase if available, otherwise falls back to local storage.
+    Uses markdown directory as source of truth.
+    Shows ALL documents from markdown directory, not just indexed ones.
     
     Returns:
         list: List of document option strings
     """
     try:
-        # Use Supabase if available
-        if SUPABASE_AVAILABLE:
-            try:
-                docs = list_gdd_documents_supabase()
-                indexed_docs = [doc for doc in docs if doc.get("chunks_count", 0) > 0]
-            except Exception as e:
-                print(f"Warning: Failed to load from Supabase: {e}")
-                if GDD_RAG_BACKBONE_AVAILABLE:
-                    markdown_docs = list_markdown_indexed_docs()
-                    indexed_docs = [doc for doc in markdown_docs if doc.get("chunks_count", 0) > 0]
-                else:
-                    indexed_docs = []
-        else:
-            if GDD_RAG_BACKBONE_AVAILABLE:
-                markdown_docs = list_markdown_indexed_docs()
-                indexed_docs = [doc for doc in markdown_docs if doc.get("chunks_count", 0) > 0]
-            else:
-                indexed_docs = []
+        # Get ALL documents from markdown directory (not just indexed)
+        docs = list_documents_from_markdown()
         
         options = ["All Documents"]
-        for doc in sorted(indexed_docs, key=lambda x: x.get("doc_id", "")):
+        for doc in sorted(docs, key=lambda x: x.get("doc_id", "")):
             doc_id = doc.get("doc_id", "")
             file_path = doc.get("file_path", "")
             name = doc.get("name", "")
+            chunks_count = doc.get("chunks_count", 0)
             
             if file_path:
                 file_name = Path(file_path).name
-                display_name = f"{file_name} ({doc_id})"
+                # Show chunk count in display name
+                if chunks_count > 0:
+                    display_name = f"{file_name} ({doc_id}) - {chunks_count} chunks"
+                else:
+                    display_name = f"{file_name} ({doc_id}) - not indexed"
             elif name:
-                display_name = f"{name} ({doc_id})"
+                if chunks_count > 0:
+                    display_name = f"{name} ({doc_id}) - {chunks_count} chunks"
+                else:
+                    display_name = f"{name} ({doc_id}) - not indexed"
             else:
-                display_name = doc_id
+                if chunks_count > 0:
+                    display_name = f"{doc_id} - {chunks_count} chunks"
+                else:
+                    display_name = f"{doc_id} - not indexed"
             
             options.append(display_name)
         
@@ -383,6 +513,82 @@ def get_document_options():
     except Exception as e:
         print(f"Error getting document options: {e}")
         return ["All Documents"]
+
+
+def get_document_sections(doc_id: str) -> List[Dict[str, str]]:
+    """
+    Get all unique sections/headers for a document from Supabase.
+    
+    Returns sections sorted by section_index, with numbered_header as the display name.
+    
+    Args:
+        doc_id: Document ID
+    
+    Returns:
+        List of section dictionaries with:
+        - section_name: Display name (numbered_header or section_path)
+        - section_path: Full section path
+        - numbered_header: Numbered header (e.g., "4. Thànhphần")
+        - section_index: Numeric index for sorting
+    """
+    if not SUPABASE_AVAILABLE:
+        return []
+    
+    try:
+        from backend.storage.supabase_client import get_supabase_client
+        client = get_supabase_client()
+        
+        # Get all unique sections for this document
+        result = client.table('gdd_chunks').select(
+            'section_path, section_title, metadata'
+        ).eq('doc_id', doc_id).execute()
+        
+        sections_map = {}
+        
+        for row in (result.data or []):
+            metadata = row.get('metadata', {})
+            if isinstance(metadata, dict):
+                numbered_header = metadata.get('numbered_header', '')
+                section_index = metadata.get('section_index', 999)
+            else:
+                numbered_header = ''
+                section_index = 999
+            
+            section_path = row.get('section_path', '')
+            section_title = row.get('section_title', '')
+            
+            # Use numbered_header as key if available, otherwise section_path
+            key = numbered_header if numbered_header else section_path
+            if not key:
+                continue
+            
+            # Store section with best available info
+            if key not in sections_map:
+                sections_map[key] = {
+                    'section_name': numbered_header if numbered_header else section_path,
+                    'section_path': section_path,
+                    'numbered_header': numbered_header,
+                    'section_index': section_index
+                }
+            else:
+                # Update if we have a better numbered_header or lower section_index
+                existing = sections_map[key]
+                if numbered_header and not existing['numbered_header']:
+                    existing['numbered_header'] = numbered_header
+                    existing['section_name'] = numbered_header
+                if section_index < existing['section_index']:
+                    existing['section_index'] = section_index
+        
+        # Convert to list and sort by section_index
+        sections = list(sections_map.values())
+        sections.sort(key=lambda x: (x['section_index'], x['section_name']))
+        
+        return sections
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error getting sections for document {doc_id}: {e}")
+        return []
 
 
 def query_gdd_documents(query: str, selected_doc: str = None):
@@ -403,51 +609,77 @@ def query_gdd_documents(query: str, selected_doc: str = None):
                 'status': 'error'
             }
         
-        # Get documents - use Supabase if available
-        if SUPABASE_AVAILABLE:
-            try:
-                markdown_docs = list_gdd_documents_supabase()
-            except Exception as e:
-                print(f"Warning: Failed to load from Supabase, trying local storage: {e}")
-                markdown_docs = list_markdown_indexed_docs()
-        else:
-            markdown_docs = list_markdown_indexed_docs()
+        # Get documents from markdown directory
+        markdown_docs = list_documents_from_markdown()
         
+        # Get indexed doc IDs (documents with chunks in Supabase)
         indexed_doc_ids = [doc.get("doc_id", "") for doc in markdown_docs if doc.get("chunks_count", 0) > 0]
         
+        # If no indexed documents, return helpful message
         if not indexed_doc_ids:
+            total_docs = len(markdown_docs)
             return {
-                'response': 'No indexed markdown documents found. Please upload and index documents first.',
+                'response': f'No indexed markdown documents found in Supabase. Found {total_docs} markdown files, but none are indexed yet. Please index documents in Supabase first.',
                 'status': 'error'
             }
         
         # Handle document selection from dropdown
         target_doc_id = None
         if selected_doc and selected_doc != "All Documents":
-            # Extract doc_id from selected_doc (format: "filename (doc_id)" or "name (doc_id)")
+            # Extract doc_id from selected_doc (format: "filename (doc_id) - X chunks" or "filename (doc_id) - not indexed")
             for doc in markdown_docs:
                 doc_id = doc.get("doc_id", "")
                 file_path = doc.get("file_path", "")
                 name = doc.get("name", "")
+                chunks_count = doc.get("chunks_count", 0)
                 
-                # Try different display name formats
+                # Try different display name formats (with chunk count suffix)
                 if file_path:
                     file_name = Path(file_path).name
-                    display_name = f"{file_name} ({doc_id})"
+                    if chunks_count > 0:
+                        display_name = f"{file_name} ({doc_id}) - {chunks_count} chunks"
+                    else:
+                        display_name = f"{file_name} ({doc_id}) - not indexed"
                 elif name:
-                    display_name = f"{name} ({doc_id})"
+                    if chunks_count > 0:
+                        display_name = f"{name} ({doc_id}) - {chunks_count} chunks"
+                    else:
+                        display_name = f"{name} ({doc_id}) - not indexed"
                 else:
-                    display_name = doc_id
+                    if chunks_count > 0:
+                        display_name = f"{doc_id} - {chunks_count} chunks"
+                    else:
+                        display_name = f"{doc_id} - not indexed"
                 
-                if display_name == selected_doc:
+                # Also try matching without the suffix (for backward compatibility)
+                display_name_no_suffix = display_name.split(" - ")[0]
+                if display_name == selected_doc or display_name_no_suffix == selected_doc:
                     target_doc_id = doc_id
                     break
             
-            if target_doc_id and target_doc_id in indexed_doc_ids:
-                indexed_doc_ids = [target_doc_id]
+            # If specific document selected, store it for later use
+            # We'll check if it's indexed when needed
+            pass
+        
+        # Check for reserved keyword "extract entire doc" early
+        message_lower = query.lower().strip()
+        extract_keywords = [
+            "extract entire doc",
+            "extract entire document",
+            "extract all doc",
+            "extract all document",
+        ]
+        is_extract_request = any(kw in message_lower for kw in extract_keywords)
+        
+        # If extract request and we have a specific document, return full content (override RAG)
+        if is_extract_request and target_doc_id:
+            full_content = extract_full_document(target_doc_id)
+            return {
+                'response': f"**Full Document: {target_doc_id}**\n\n{full_content}",
+                'status': 'success'
+            }
         
         # Handle special queries
-        message_lower = query.lower().strip()
         if "what are the files" in message_lower or "list documents" in message_lower or "show documents" in message_lower:
             doc_list = []
             for doc in markdown_docs[:20]:  # Limit to 20
@@ -471,26 +703,89 @@ def query_gdd_documents(query: str, selected_doc: str = None):
             markdown_status = {doc["doc_id"]: doc for doc in markdown_docs}
             
             # First, try to find exact document ID match in message
-            for doc_id in indexed_doc_ids:
+            # Check ALL documents (not just indexed) to find the target
+            for doc in markdown_docs:
+                doc_id = doc.get("doc_id", "")
+                file_name = doc.get("name", "")
+                file_path = doc.get("file_path", "")
+                
+                # Normalize for comparison
                 doc_id_normalized = doc_id.lower().replace("[", "").replace("]", "").replace(",", "").replace("_", "").replace("-", "").replace(" ", "")
                 message_normalized = message_lower.replace("[", "").replace("]", "").replace(",", "").replace("_", "").replace("-", "").replace(" ", "")
                 
-                # Check if doc_id appears in message
+                # Strategy 1: Check if doc_id appears in message
                 if doc_id_normalized in message_normalized or message_normalized in doc_id_normalized:
                     target_doc_id = doc_id
                     break
                 
-                # Also check file path
-                file_path = markdown_status.get(doc_id, {}).get("file_path", "").lower()
+                # Strategy 2: Check file name (stem)
+                if file_name:
+                    file_name_normalized = file_name.lower().replace("[", "").replace("]", "").replace(",", "").replace("_", "").replace("-", "").replace(" ", "")
+                    if file_name_normalized in message_normalized or any(word in file_name_normalized for word in message_normalized.split() if len(word) > 4):
+                        target_doc_id = doc_id
+                        break
+                
+                # Strategy 3: Check file path
                 if file_path:
-                    file_normalized = Path(file_path).stem.lower().replace("_", "").replace("-", "").replace(" ", "")
-                    if file_normalized in message_normalized or any(word in file_normalized for word in message_normalized.split() if len(word) > 4):
+                    file_stem = Path(file_path).stem.lower().replace("_", "").replace("-", "").replace(" ", "")
+                    if file_stem in message_normalized or any(word in file_stem for word in message_normalized.split() if len(word) > 4):
                         target_doc_id = doc_id
                         break
         
-        # If specific document found, query only that document
-        if target_doc_id:
-            indexed_doc_ids = [target_doc_id]
+        # Check for reserved keyword "extract entire doc" (after document selection)
+        # This overrides RAG and returns the full markdown document
+        message_lower = query.lower().strip()
+        extract_keywords = [
+            "extract entire doc",
+            "extract entire document",
+            "extract all doc",
+            "extract all document",
+        ]
+        
+        is_extract_request = any(kw in message_lower for kw in extract_keywords)
+        
+        # If extract request and we have a specific document, return full content (override RAG)
+        if is_extract_request and target_doc_id:
+            full_content = extract_full_document(target_doc_id)
+            return {
+                'response': f"**Full Document: {target_doc_id}**\n\n{full_content}",
+                'status': 'success'
+            }
+        
+        # If extract request but no specific document, try to find one from query
+        if is_extract_request and not target_doc_id:
+            # Try to find document from query text
+            for doc_id in indexed_doc_ids:
+                doc_id_normalized = doc_id.lower().replace("[", "").replace("]", "").replace(",", "").replace("_", "").replace("-", "").replace(" ", "")
+                message_normalized = message_lower.replace("[", "").replace("]", "").replace(",", "").replace("_", "").replace("-", "").replace(" ", "")
+                
+                if doc_id_normalized in message_normalized or message_normalized in doc_id_normalized:
+                    full_content = extract_full_document(doc_id)
+                    return {
+                        'response': f"**Full Document: {doc_id}**\n\n{full_content}",
+                        'status': 'success'
+                    }
+            
+            # If still no match, return error
+            return {
+                'response': 'Please specify which document to extract. You can select a document from the dropdown or mention the document name in your query.',
+                'status': 'error'
+            }
+        
+        # For all other queries, use the normal RAG system (chunk-based retrieval)
+        # Check if we have indexed documents to query
+        if not indexed_doc_ids:
+            # Check if a document was selected but not indexed
+            if target_doc_id:
+                return {
+                    'response': f'Document "{target_doc_id}" is not indexed in Supabase. Please index it first before querying. You can use "extract entire doc" or "extract all doc" to view the full document without indexing.',
+                    'status': 'error'
+                }
+            else:
+                return {
+                    'response': 'No indexed documents available for querying. Please ensure documents are indexed in Supabase.',
+                    'status': 'error'
+                }
         
         # Create provider and query
         try:
@@ -501,58 +796,131 @@ def query_gdd_documents(query: str, selected_doc: str = None):
                 'status': 'error'
             }
         
-        # Query only markdown documents
+        # Query only markdown documents using RAG (chunk-based retrieval)
+        # Use Supabase only - no local storage fallback
         try:
-            # Use Supabase if available, otherwise local storage
-            if SUPABASE_AVAILABLE:
-                try:
-                    markdown_chunks = get_gdd_top_chunks_supabase(
-                        doc_ids=indexed_doc_ids,
-                        question=query,
-                        provider=provider,
-                        top_k=6,
-                        per_doc_limit=2,
-                    )
-                except Exception as e:
-                    print(f"Warning: Supabase query failed, falling back to local storage: {e}")
-                    markdown_chunks = get_markdown_top_chunks(
-                        doc_ids=indexed_doc_ids,
-                        question=query,
-                        provider=provider,
-                        top_k=6,
-                        per_doc_limit=2,
-                    )
-            else:
-                # Use local storage
-                markdown_chunks = get_markdown_top_chunks(
-                    doc_ids=indexed_doc_ids,
-                    question=query,
-                    provider=provider,
-                    top_k=6,
-                    per_doc_limit=2,
-                )
+            if not SUPABASE_AVAILABLE:
+                return {
+                    'response': 'Supabase is not configured. Please configure SUPABASE_URL and SUPABASE_KEY in your .env file.',
+                    'status': 'error'
+                }
             
-            # Generate answer from markdown chunks using LLM
+            # Determine which documents to query
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info("="*80)
+            logger.info("[GDD SERVICE] Starting retrieval")
+            logger.info(f"[GDD SERVICE] Query: {query}")
+            logger.info(f"[GDD SERVICE] target_doc_id (from @ syntax or dropdown): {target_doc_id}")
+            logger.info(f"[GDD SERVICE] indexed_doc_ids (all available): {indexed_doc_ids[:5]}... (total: {len(indexed_doc_ids)})")
+            
+            # If target_doc_id is specified, use only that document
+            if target_doc_id:
+                logger.info(f"[GDD SERVICE] ✓ Using only target_doc_id: {target_doc_id}")
+                doc_ids_to_query = [target_doc_id]
+            else:
+                logger.info(f"[GDD SERVICE] Using all indexed_doc_ids: {len(indexed_doc_ids)} documents")
+                doc_ids_to_query = indexed_doc_ids
+            
+            logger.info(f"[GDD SERVICE] Final doc_ids_to_query: {doc_ids_to_query}")
+            logger.info("="*80)
+            
+            # Enhanced retrieval with HYDE and section targeting
+            markdown_chunks, retrieval_metrics = get_gdd_top_chunks_supabase(
+                doc_ids=doc_ids_to_query,
+                question=query,
+                provider=provider,
+                top_k=6,
+                per_doc_limit=2,
+                use_hyde=True,  # Enable HYDE query expansion
+            )
+            
+            logger.info(f"[GDD Query] Retrieved {len(markdown_chunks)} chunks")
+            logger.info(f"[GDD Query] Retrieval metrics: {retrieval_metrics.get('timing', {})}")
+            if markdown_chunks:
+                logger.info(f"[GDD Query] Chunk doc_ids: {[c.get('doc_id') for c in markdown_chunks]}")
+                logger.info(f"[GDD Query] Section distribution: {retrieval_metrics.get('section_distribution', {})}")
+            
+            # Validate chunks belong to requested documents
+            valid_chunks = []
+            for chunk in markdown_chunks:
+                chunk_doc_id = chunk.get('doc_id', '')
+                if chunk_doc_id in doc_ids_to_query:
+                    valid_chunks.append(chunk)
+                else:
+                    logger.warning(f"[GDD Query] WARNING: Chunk from doc_id '{chunk_doc_id}' not in requested list {doc_ids_to_query}. Filtering out.")
+            
+            markdown_chunks = valid_chunks
+            logger.info(f"[GDD Query] After validation: {len(markdown_chunks)} valid chunks")
+            
+            # Generate answer from markdown chunks using LLM with enhanced section information
             if markdown_chunks:
                 selected_chunks = _select_chunks_for_answer(markdown_chunks)
-                chunk_texts = "\n\n".join(
-                    f"[Chunk {i+1} from {chunk['doc_id']}]\n{chunk['content']}"
-                    for i, chunk in enumerate(selected_chunks)
-                )
                 
-                # Detect question language and instruct LLM to respond in same language
-                question_lang = _detect_question_language(query)
-                language_instruction = "Vietnamese" if question_lang == 'vietnamese' else "English"
+                # Detect language from retrieval metrics or fallback to detection function
+                detected_language = None
+                if retrieval_metrics and 'language_detection' in retrieval_metrics:
+                    lang_info = retrieval_metrics.get('language_detection', {})
+                    detected_language = lang_info.get('detected_language', None)
                 
+                # Fallback to language detection function if not in metrics
+                if not detected_language:
+                    detected_language = _detect_question_language(query)
+                    # Convert to 'en' or 'vi' format to match retrieval metrics
+                    if detected_language == 'english':
+                        detected_language = 'en'
+                    elif detected_language == 'vietnamese':
+                        detected_language = 'vi'
+                
+                # Determine response language instruction
+                if detected_language == 'vi' or detected_language == 'vietnamese':
+                    language_instruction = "IMPORTANT: Respond in Vietnamese (Tiếng Việt). Your entire answer must be in Vietnamese."
+                else:
+                    language_instruction = "IMPORTANT: Respond in English. Your entire answer must be in English."
+                
+                # Enhanced prompt with section information
+                chunk_texts_with_sections = []
+                for i, chunk in enumerate(selected_chunks):
+                    section_info = ""
+                    if chunk.get('numbered_header'):
+                        section_info = f" [Section: {chunk.get('numbered_header')}]"
+                    elif chunk.get('section_path'):
+                        section_info = f" [Section: {chunk.get('section_path')}]"
+                    
+                    chunk_texts_with_sections.append(
+                        f"[Chunk {i+1} from {chunk['doc_id']}{section_info}]\n{chunk['content']}"
+                    )
+                
+                chunk_texts_enhanced = "\n\n".join(chunk_texts_with_sections)
+                
+                # Use enhanced prompt format with section context and language instruction
                 prompt = f"""Based on the following document chunks, answer the question: {query}
 
-Chunks:
-{chunk_texts}
+{language_instruction}
 
-IMPORTANT: Please respond in {language_instruction} language. Match the language of the question exactly. Provide a clear, comprehensive answer based on the chunks above."""
+Chunks:
+{chunk_texts_enhanced}
+
+Provide a clear, comprehensive answer based on the chunks above. If chunks reference specific sections (e.g., "4.1 DanhsáchTanks"), mention those section numbers in your answer."""
                 answer = provider.llm(prompt)
             else:
-                answer = "No relevant chunks found in markdown documents."
+                # Detect language for error message
+                detected_language = None
+                if retrieval_metrics and 'language_detection' in retrieval_metrics:
+                    lang_info = retrieval_metrics.get('language_detection', {})
+                    detected_language = lang_info.get('detected_language', None)
+                
+                if not detected_language:
+                    detected_language = _detect_question_language(query)
+                    if detected_language == 'english':
+                        detected_language = 'en'
+                    elif detected_language == 'vietnamese':
+                        detected_language = 'vi'
+                
+                if detected_language == 'vi' or detected_language == 'vietnamese':
+                    answer = "Không tìm thấy đoạn tài liệu liên quan trong các tài liệu markdown."
+                else:
+                    answer = "No relevant chunks found in markdown documents."
             
             return {
                 'response': answer,

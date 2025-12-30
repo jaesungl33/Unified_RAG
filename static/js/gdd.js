@@ -10,9 +10,12 @@ document.addEventListener('DOMContentLoaded', function() {
     const documentSearch = document.getElementById('document-search');
     
     let selectedDocument = null; // Track selected document
+    let selectedDocId = null; // Track selected document ID
     let allDocumentsData = null; // Store all documents data for filtering
     const CHAT_STORAGE_KEY = 'gdd_chat_history';
     let isUpdatingFromSelection = false; // Flag to prevent circular updates
+    let sectionDropdown = null; // Section dropdown element
+    let documentSections = []; // Cached sections for selected document
     
     // If this page load is a hard refresh, clear any persisted chat history
     try {
@@ -43,10 +46,51 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
     
-    // Sync input box with @documentname patterns
+    // Sync input box with @documentname patterns and handle @ section dropdown
     queryInput.addEventListener('input', function() {
         if (!isUpdatingFromSelection) {
             syncSelectionFromInput();
+            handleSectionDropdown();
+        }
+    });
+    
+    // Handle clicks outside to close dropdown
+    document.addEventListener('click', function(e) {
+        if (sectionDropdown && !sectionDropdown.contains(e.target) && e.target !== queryInput) {
+            hideSectionDropdown();
+        }
+    });
+    
+    // Handle keyboard navigation in dropdown
+    queryInput.addEventListener('keydown', function(e) {
+        if (sectionDropdown && sectionDropdown.style.display !== 'none') {
+            const items = sectionDropdown.querySelectorAll('.section-item');
+            const currentIndex = Array.from(items).findIndex(item => item.classList.contains('highlighted'));
+            
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                const nextIndex = currentIndex < items.length - 1 ? currentIndex + 1 : 0;
+                items.forEach(item => item.classList.remove('highlighted'));
+                if (items[nextIndex]) {
+                    items[nextIndex].classList.add('highlighted');
+                    items[nextIndex].scrollIntoView({ block: 'nearest' });
+                }
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                const prevIndex = currentIndex > 0 ? currentIndex - 1 : items.length - 1;
+                items.forEach(item => item.classList.remove('highlighted'));
+                if (items[prevIndex]) {
+                    items[prevIndex].classList.add('highlighted');
+                    items[prevIndex].scrollIntoView({ block: 'nearest' });
+                }
+            } else if (e.key === 'Enter' && currentIndex >= 0) {
+                e.preventDefault();
+                if (items[currentIndex]) {
+                    items[currentIndex].click();
+                }
+            } else if (e.key === 'Escape') {
+                hideSectionDropdown();
+            }
         }
     });
     
@@ -57,9 +101,19 @@ document.addEventListener('DOMContentLoaded', function() {
         const query = queryInput.value.trim();
         if (!query) return;
         
-        // Extract query text (remove @documentname patterns for the actual query)
-        const queryParts = query.split(/\s+/);
-        const queryText = queryParts.filter(part => !part.startsWith('@')).join(' ');
+        // Extract query text - keep @section but remove @documentname
+        // Format: "@documentname @section query text"
+        // We want to send: "@section query text" (document is already selected via selected_doc)
+        let queryText = query;
+        if (selectedDocument && selectedDocument !== 'All Documents') {
+            // Remove the first @documentname pattern
+            const docName = selectedDocument.split(' (')[0];
+            const cleanDocName = docName.replace(/[()]/g, '').trim();
+            const docPattern = `@${cleanDocName}`;
+            if (queryText.startsWith(docPattern)) {
+                queryText = queryText.substring(docPattern.length).trim();
+            }
+        }
         
         // Add user message (show the full input including @patterns)
         addMessage(query, 'user');
@@ -315,6 +369,20 @@ document.addEventListener('DOMContentLoaded', function() {
         // Update selected document
         selectedDocument = docValue === 'All Documents' ? null : docValue;
         
+        // Extract doc_id from selected document
+        if (selectedDocument && selectedDocument !== 'All Documents') {
+            // Extract doc_id from format: "filename (doc_id) - X chunks"
+            const match = selectedDocument.match(/\(([^)]+)\)/);
+            selectedDocId = match ? match[1] : null;
+            
+            // Load sections for this document
+            loadDocumentSections(selectedDocId);
+        } else {
+            selectedDocId = null;
+            documentSections = [];
+            hideSectionDropdown();
+        }
+        
         // Re-render documents to move selected document to top
         if (allDocumentsData) {
             renderDocuments(allDocumentsData);
@@ -393,11 +461,20 @@ document.addEventListener('DOMContentLoaded', function() {
         // Update selectedDocument if match found
         if (matchedOptionValue && selectedDocument !== matchedOptionValue) {
             selectedDocument = matchedOptionValue;
+            // Extract doc_id and load sections
+            const match = matchedOptionValue.match(/\(([^)]+)\)/);
+            selectedDocId = match ? match[1] : null;
+            if (selectedDocId) {
+                loadDocumentSections(selectedDocId);
+            }
             // Re-render to move selected document to top
             renderDocuments(allDocumentsData);
         } else if (!matchedOptionValue && selectedDocument) {
             // No match found, deselect
             selectedDocument = null;
+            selectedDocId = null;
+            documentSections = [];
+            hideSectionDropdown();
             updateDocumentSelectionUI();
         }
     }
@@ -436,6 +513,12 @@ document.addEventListener('DOMContentLoaded', function() {
     
     function formatMessage(text) {
         if (!text) return '';
+        
+        // Check if text contains HTML elements (iframe, embed, etc.) - don't escape if it does
+        if (text.includes('<iframe') || text.includes('<embed') || text.includes('<object')) {
+            // Contains HTML embeds - return as-is to allow rendering
+            return text;
+        }
         
         // Escape HTML first
         let escaped = text
@@ -606,6 +689,204 @@ document.addEventListener('DOMContentLoaded', function() {
     
     function removeTypingIndicator(indicator) {
         indicator.remove();
+    }
+    
+    function loadDocumentSections(docId) {
+        if (!docId) {
+            documentSections = [];
+            return;
+        }
+        
+        console.log('[Section Dropdown] Loading sections for doc_id:', docId);
+        fetch(`/api/gdd/sections?doc_id=${encodeURIComponent(docId)}`)
+            .then(response => {
+                console.log('[Section Dropdown] Response status:', response.status, response.statusText);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('[Section Dropdown] Received sections data:', data);
+                if (data.sections && Array.isArray(data.sections)) {
+                    documentSections = data.sections;
+                    console.log('[Section Dropdown] Loaded', documentSections.length, 'sections');
+                } else {
+                    documentSections = [];
+                    console.warn('[Section Dropdown] No sections in response:', data);
+                }
+            })
+            .catch(error => {
+                console.error('[Section Dropdown] Error loading sections:', error);
+                documentSections = [];
+            });
+    }
+    
+    function handleSectionDropdown() {
+        const inputValue = queryInput.value;
+        const cursorPos = queryInput.selectionStart || inputValue.length;
+        
+        // Check if we have a document selected and sections loaded
+        if (!selectedDocId || !selectedDocument || selectedDocument === 'All Documents') {
+            hideSectionDropdown();
+            return;
+        }
+        
+        if (documentSections.length === 0) {
+            console.log('[Section Dropdown] No sections loaded yet, hiding dropdown');
+            hideSectionDropdown();
+            return;
+        }
+        
+        // Find all @ symbols in the input before cursor
+        const textBeforeCursor = inputValue.substring(0, cursorPos);
+        const atMatches = [...textBeforeCursor.matchAll(/@/g)];
+        
+        // Need at least 2 @ symbols (one for document, one for section)
+        if (atMatches.length < 2) {
+            hideSectionDropdown();
+            return;
+        }
+        
+        // Get the last @ position (this is the section @)
+        const lastAtPos = atMatches[atMatches.length - 1].index;
+        
+        // Check if cursor is within a reasonable distance from the last @
+        // This prevents dropdown from showing when typing far from the @
+        const distanceFromAt = cursorPos - lastAtPos - 1;
+        const textAfterLastAt = textBeforeCursor.substring(lastAtPos + 1);
+        
+        // Only show dropdown if:
+        // 1. Cursor is right after @ (distance 0) OR
+        // 2. Cursor is within the search term (no spaces after last @)
+        const hasSpaceAfterAt = textAfterLastAt.includes(' ');
+        if (hasSpaceAfterAt) {
+            // User has already selected a section (indicated by space after section name)
+            hideSectionDropdown();
+            return;
+        }
+        
+        // Extract search term after the last @
+        const searchTerm = textAfterLastAt.trim();
+        
+        console.log('[Section Dropdown] Showing dropdown for search term:', searchTerm, 'at position', lastAtPos);
+        showSectionDropdown(searchTerm, lastAtPos);
+    }
+    
+    function showSectionDropdown(searchTerm, atPosition) {
+        if (!documentSections || documentSections.length === 0) {
+            console.log('[Section Dropdown] No sections available to show');
+            hideSectionDropdown();
+            return;
+        }
+        
+        // Filter sections by search term
+        const filtered = documentSections.filter(section => {
+            const name = (section.section_name || section.section_path || '').toLowerCase();
+            return name.includes(searchTerm.toLowerCase());
+        });
+        
+        // Show all sections if no search term, otherwise show filtered
+        const sectionsToShow = searchTerm.length > 0 ? filtered : documentSections.slice(0, 20); // Limit to 20 for performance
+        
+        if (sectionsToShow.length === 0) {
+            console.log('[Section Dropdown] No sections match search term:', searchTerm);
+            hideSectionDropdown();
+            return;
+        }
+        
+        console.log('[Section Dropdown] Showing', sectionsToShow.length, 'sections');
+        
+        // Create or update dropdown
+        if (!sectionDropdown) {
+            sectionDropdown = document.createElement('div');
+            sectionDropdown.className = 'section-dropdown';
+            sectionDropdown.id = 'section-dropdown';
+            document.body.appendChild(sectionDropdown);
+        }
+        
+        // Clear and populate dropdown
+        sectionDropdown.innerHTML = '';
+        
+        sectionsToShow.forEach((section, index) => {
+            const item = document.createElement('div');
+            item.className = 'section-item';
+            if (index === 0) {
+                item.classList.add('highlighted');
+            }
+            item.textContent = section.section_name || section.section_path || 'Unknown Section';
+            item.dataset.sectionName = section.section_name || section.section_path || '';
+            item.dataset.sectionPath = section.section_path || '';
+            
+            item.addEventListener('click', function() {
+                insertSectionIntoQuery(section.section_name || section.section_path || '');
+            });
+            
+            item.addEventListener('mouseenter', function() {
+                sectionDropdown.querySelectorAll('.section-item').forEach(i => i.classList.remove('highlighted'));
+                item.classList.add('highlighted');
+            });
+            
+            sectionDropdown.appendChild(item);
+        });
+        
+        // Position dropdown ABOVE the input (fixed positioning is relative to viewport)
+        const inputRect = queryInput.getBoundingClientRect();
+        const dropdownHeight = 200; // Max height for dropdown
+        
+        sectionDropdown.style.display = 'block';
+        sectionDropdown.style.position = 'fixed';
+        // Position above the input, subtract dropdown height and add small gap
+        sectionDropdown.style.bottom = (window.innerHeight - inputRect.top + 5) + 'px';
+        sectionDropdown.style.left = inputRect.left + 'px';
+        sectionDropdown.style.width = Math.min(inputRect.width, 400) + 'px';
+        sectionDropdown.style.maxHeight = dropdownHeight + 'px';
+        sectionDropdown.style.overflowY = 'auto';
+        sectionDropdown.style.zIndex = '10000';
+        
+        console.log('[Section Dropdown] Positioned at:', {
+            bottom: sectionDropdown.style.bottom,
+            left: sectionDropdown.style.left,
+            width: sectionDropdown.style.width,
+            display: sectionDropdown.style.display
+        });
+    }
+    
+    function hideSectionDropdown() {
+        if (sectionDropdown) {
+            sectionDropdown.style.display = 'none';
+        }
+    }
+    
+    function insertSectionIntoQuery(sectionName) {
+        const inputValue = queryInput.value;
+        const cursorPos = queryInput.selectionStart || inputValue.length;
+        
+        // Find the last @ before cursor
+        const textBeforeCursor = inputValue.substring(0, cursorPos);
+        const lastAtPos = textBeforeCursor.lastIndexOf('@');
+        
+        if (lastAtPos === -1) {
+            return;
+        }
+        
+        // Replace text after @ with section name + space
+        const textAfterCursor = inputValue.substring(cursorPos);
+        const beforeAt = inputValue.substring(0, lastAtPos + 1);
+        
+        // Add section name with space after it
+        const newValue = beforeAt + sectionName + ' ' + textAfterCursor;
+        queryInput.value = newValue;
+        
+        // Set cursor after section name and space
+        const newCursorPos = lastAtPos + 1 + sectionName.length + 1;
+        queryInput.setSelectionRange(newCursorPos, newCursorPos);
+        queryInput.focus();
+        
+        // Hide dropdown immediately
+        hideSectionDropdown();
+        
+        console.log('[Section Dropdown] Inserted section:', sectionName);
     }
 });
 

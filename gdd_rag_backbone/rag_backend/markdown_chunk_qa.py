@@ -2,7 +2,7 @@
 Query functions for markdown chunks stored in separate storage.
 
 This module provides query functionality for markdown chunks that are stored
-in rag_storage_md_indexed/ (separate from the main rag_storage/).
+in gdd_data/summarised_chunks/ (separate from the main rag_storage/).
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from gdd_rag_backbone.rag_backend.chunk_qa import (
 )
 
 # Markdown chunks storage paths
-MARKDOWN_WORKING_DIR = PROJECT_ROOT / "rag_storage_md_indexed"
+MARKDOWN_WORKING_DIR = PROJECT_ROOT / "gdd_data" / "summarised_chunks"
 MARKDOWN_CHUNKS_PATH = MARKDOWN_WORKING_DIR / "kv_store_text_chunks.json"
 MARKDOWN_VDB_PATH = MARKDOWN_WORKING_DIR / "vdb_chunks.json"
 MARKDOWN_STATUS_PATH = MARKDOWN_WORKING_DIR / "kv_store_doc_status.json"

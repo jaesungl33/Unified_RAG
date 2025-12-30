@@ -103,7 +103,7 @@ def search_code_chunks_supabase(
         limit: Maximum number of results
         threshold: Similarity threshold
         file_paths: Optional list of file paths to filter by
-        chunk_type: Optional chunk type ('method' or 'class')
+        chunk_type: Optional chunk type ('method', 'class', 'struct', 'interface', 'enum')
     
     Returns:
         List of matching chunks with similarity scores
@@ -228,20 +228,95 @@ def get_code_chunks_for_files(
         filename_set = set(filenames)
         logger.info(f"[Direct File Lookup] Looking up chunks for filenames: {list(filename_set)} (chunk_type={chunk_type})")
         
+        # First, try to find the file in code_files table to get the exact file_path
+        # This helps when the path format in the database differs from the input
+        file_paths_from_db = {}
         for filename in filename_set:
-            query = client.table('code_chunks').select('*')
+            try:
+                # Query code_files table to find matching files
+                files_query = client.table('code_files').select('file_path, file_name').ilike('file_name', f'%{filename}%').execute()
+                matching_files = files_query.data if files_query.data else []
+                if matching_files:
+                    logger.info(f"[Direct File Lookup] Found {len(matching_files)} file(s) in code_files table for '{filename}': {[f.get('file_path') for f in matching_files]}")
+                    # Store the first matching file_path (or use exact match if available)
+                    for file_info in matching_files:
+                        if file_info.get('file_name', '').lower() == filename.lower():
+                            file_paths_from_db[filename] = file_info.get('file_path')
+                            logger.info(f"[Direct File Lookup] Using exact match file_path: {file_paths_from_db[filename]}")
+                            break
+                    if filename not in file_paths_from_db and matching_files:
+                        file_paths_from_db[filename] = matching_files[0].get('file_path')
+                else:
+                    logger.warning(f"[Direct File Lookup] File '{filename}' not found in code_files table - it may not be indexed")
+            except Exception as e:
+                logger.warning(f"[Direct File Lookup] Error querying code_files table for '{filename}': {e}")
+        
+        for filename in filename_set:
+            # Try multiple matching strategies
+            chunks_found = []
             
-            # Match by filename using ilike (case-insensitive)
-            query = query.ilike('file_path', f'%{filename}%')
+            # Strategy 0: If we found the file_path from code_files table, use it directly
+            if filename in file_paths_from_db:
+                db_file_path = file_paths_from_db[filename]
+                logger.info(f"[Direct File Lookup] Strategy 0 (exact file_path from code_files): '{db_file_path}'")
+                query = client.table('code_chunks').select('*')
+                query = query.eq('file_path', db_file_path)  # Use exact match, not ILIKE
+                if chunk_type:
+                    query = query.eq('chunk_type', chunk_type)
+                result = query.execute()
+                chunks_found = result.data if result.data else []
+                logger.info(f"[Direct File Lookup] Strategy 0: Found {len(chunks_found)} chunks using exact file_path")
             
-            # Filter by chunk_type if specified
-            if chunk_type:
-                query = query.eq('chunk_type', chunk_type)
+            # Strategy 1: Exact filename match (case-insensitive) - only if Strategy 0 didn't find anything
+            if not chunks_found:
+                query = client.table('code_chunks').select('*')
+                query = query.ilike('file_path', f'%{filename}%')
+                if chunk_type:
+                    query = query.eq('chunk_type', chunk_type)
+                result = query.execute()
+                chunks_found = result.data if result.data else []
+                logger.info(f"[Direct File Lookup] Strategy 1 (filename '{filename}'): Found {len(chunks_found)} chunks")
             
-            result = query.execute()
+            # Strategy 2: Try without extension (in case extension is different)
+            if not chunks_found and '.' in filename:
+                filename_no_ext = filename.rsplit('.', 1)[0]
+                query = client.table('code_chunks').select('*')
+                query = query.ilike('file_path', f'%{filename_no_ext}%')
+                if chunk_type:
+                    query = query.eq('chunk_type', chunk_type)
+                result = query.execute()
+                chunks_found = result.data if result.data else []
+                logger.info(f"[Direct File Lookup] Strategy 2 (filename without ext '{filename_no_ext}'): Found {len(chunks_found)} chunks")
             
-            chunks_found = result.data if result.data else []
-            logger.info(f"[Direct File Lookup] Found {len(chunks_found)} chunks for filename '{filename}' (chunk_type={chunk_type})")
+            # Strategy 3: Try case variations (uppercase, lowercase, title case)
+            if not chunks_found:
+                variations = [filename.lower(), filename.upper(), filename.capitalize()]
+                for variant in variations:
+                    if variant == filename:  # Skip if same as original
+                        continue
+                    query = client.table('code_chunks').select('*')
+                    query = query.ilike('file_path', f'%{variant}%')
+                    if chunk_type:
+                        query = query.eq('chunk_type', chunk_type)
+                    result = query.execute()
+                    variant_chunks = result.data if result.data else []
+                    if variant_chunks:
+                        chunks_found = variant_chunks
+                        logger.info(f"[Direct File Lookup] Strategy 3 (variant '{variant}'): Found {len(chunks_found)} chunks")
+                        break
+            
+            # Strategy 4: If still no chunks found and chunk_type was specified, try without chunk_type filter
+            # This helps identify if the file exists but chunks are of a different type
+            if not chunks_found and chunk_type:
+                logger.info(f"[Direct File Lookup] Strategy 4: Trying without chunk_type filter for '{filename}'")
+                query = client.table('code_chunks').select('*')
+                query = query.ilike('file_path', f'%{filename}%')
+                result = query.execute()
+                all_chunks_for_file = result.data if result.data else []
+                if all_chunks_for_file:
+                    logger.warning(f"[Direct File Lookup] Found {len(all_chunks_for_file)} chunks for '{filename}' but NONE are of type '{chunk_type}'. Available types: {set(c.get('chunk_type') for c in all_chunks_for_file)}")
+                else:
+                    logger.warning(f"[Direct File Lookup] No chunks found for filename '{filename}' after trying all strategies (including without chunk_type filter)")
             
             if chunks_found:
                 all_chunks.extend(chunks_found)
@@ -295,8 +370,11 @@ def index_code_chunks_to_supabase(
         raise ValueError("Supabase is not configured")
     
     try:
-        # Normalize path
-        normalized_path = normalize_path_consistent(file_path)
+        # For indexing: use the file_path as-is (don't normalize)
+        # This ensures new chunks match the format of existing chunks (typically Windows paths)
+        # Only normalize if we're doing a search/query, not when indexing
+        # The old indexed chunks use full Windows paths like c:\users\...\assets\...
+        normalized_path = file_path  # Use path as-is for indexing to match existing format
         
         # Insert file metadata
         insert_code_file(
@@ -311,23 +389,26 @@ def index_code_chunks_to_supabase(
         # Prepare chunks for Supabase
         supabase_chunks = []
         for chunk in chunks:
-            chunk_type = chunk.get('chunk_type', 'method')  # 'method' or 'class'
+            chunk_type = chunk.get('chunk_type', 'method')  # 'method', 'class', 'struct', 'interface', 'enum'
             
             # Determine what to embed
             if chunk_type == 'method':
                 text_to_embed = chunk.get('code', '') or chunk.get('source_code', '')
-            else:  # class
+            else:  # class, struct, interface, enum - all use source_code
                 text_to_embed = chunk.get('source_code', '')
             
             if not text_to_embed:
                 continue
             
-            # Generate embedding
+            # Generate embedding - single attempt only (for large files, retries waste time)
             try:
                 embedding = embedding_func([text_to_embed])[0]
             except Exception as e:
+                error_msg = str(e)
+                # For large files, don't retry - just fail immediately
                 print(f"Warning: Failed to embed chunk: {e}")
-                continue
+                # Re-raise to stop processing this file
+                raise Exception(f"Embedding failed for large file: {error_msg}")
             
             supabase_chunk = {
                 "file_path": normalized_path or file_path,

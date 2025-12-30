@@ -1,7 +1,7 @@
 """
 Script to chunk markdown files using the new document-based chunking strategy.
 
-This script processes markdown files and saves chunks to rag_storage_md/.
+This script processes markdown files and saves chunks to gdd_data/chunks/.
 """
 
 import argparse
@@ -88,8 +88,8 @@ def main():
     parser.add_argument(
         "--markdown-dir",
         type=Path,
-        default=Path("PDFtoMarkdown/markdown"),
-        help="Directory containing markdown files (default: PDFtoMarkdown/markdown)"
+        default=Path("gdd_data/markdown"),
+        help="Directory containing markdown files (default: gdd_data/markdown)"
     )
     parser.add_argument(
         "--file",
@@ -99,8 +99,8 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("rag_storage_md"),
-        help="Output directory for chunks (default: rag_storage_md)"
+        default=Path("gdd_data/chunks"),
+        help="Output directory for chunks (default: gdd_data/chunks)"
     )
     parser.add_argument(
         "--chunk-size",

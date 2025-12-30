@@ -24,7 +24,7 @@ from gdd_rag_backbone.llm_providers import QwenProvider
 from gdd_rag_backbone.rag_backend.markdown_chunk_qa import get_markdown_top_chunks, list_markdown_indexed_docs
 from gdd_rag_backbone.config import PROJECT_ROOT
 
-MARKDOWN_CHUNKS_DIR = PROJECT_ROOT / "rag_storage_md"
+MARKDOWN_CHUNKS_DIR = PROJECT_ROOT / "gdd_data" / "chunks"
 
 
 @dataclass

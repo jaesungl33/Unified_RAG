@@ -408,15 +408,17 @@ def vector_search_code_chunks(
         logger.error(f"[Supabase Code Search] Error: {e}")
         raise Exception(f"Error in Code vector search: {e}")
 
-def insert_gdd_document(doc_id: str, name: str, file_path: Optional[str] = None, file_size: Optional[int] = None) -> Dict[str, Any]:
+def insert_gdd_document(doc_id: str, name: str, file_path: Optional[str] = None, file_size: Optional[int] = None, markdown_content: Optional[str] = None, pdf_storage_path: Optional[str] = None) -> Dict[str, Any]:
     """
     Insert or update a GDD document.
     
     Args:
         doc_id: Unique document ID
         name: Document name
-        file_path: Optional file path
+        file_path: Optional file path (for reference, not used for reading)
         file_size: Optional file size in bytes
+        markdown_content: Optional full markdown content (stored in Supabase)
+        pdf_storage_path: Optional PDF filename in Supabase Storage (gdd_pdfs bucket)
     
     Returns:
         Inserted/updated document data
@@ -424,12 +426,22 @@ def insert_gdd_document(doc_id: str, name: str, file_path: Optional[str] = None,
     try:
         client = get_supabase_client(use_service_key=True)
         
-        result = client.table('gdd_documents').upsert({
+        doc_data = {
             'doc_id': doc_id,
             'name': name,
             'file_path': file_path,
             'file_size': file_size
-        }, on_conflict='doc_id').execute()
+        }
+        
+        # Add markdown_content if provided
+        if markdown_content is not None:
+            doc_data['markdown_content'] = markdown_content
+        
+        # Add pdf_storage_path if provided
+        if pdf_storage_path is not None:
+            doc_data['pdf_storage_path'] = pdf_storage_path
+        
+        result = client.table('gdd_documents').upsert(doc_data, on_conflict='doc_id').execute()
         
         return result.data[0] if result.data else {}
     except Exception as e:
@@ -615,6 +627,157 @@ def get_gdd_documents() -> List[Dict[str, Any]]:
         logger.error(f"❌ Error fetching GDD documents: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise Exception(f"Error fetching GDD documents: {e}")
+
+
+def get_gdd_document_markdown(doc_id: str) -> Optional[str]:
+    """
+    Get full markdown content for a GDD document from Supabase.
+    
+    Args:
+        doc_id: Document ID
+    
+    Returns:
+        Markdown content as string, or None if not found
+    """
+    try:
+        client = get_supabase_client()
+        result = client.table('gdd_documents').select('markdown_content').eq('doc_id', doc_id).limit(1).execute()
+        
+        if result.data and len(result.data) > 0:
+            return result.data[0].get('markdown_content')
+        return None
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error fetching markdown content for {doc_id}: {e}")
+        return None
+
+
+def upload_pdf_to_storage(pdf_path: Path, pdf_filename: str) -> bool:
+    """
+    Upload PDF file to Supabase Storage (gdd_pdfs bucket).
+    
+    Args:
+        pdf_path: Path to the PDF file on disk
+        pdf_filename: Filename to use in storage (should be sanitized)
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        client = get_supabase_client(use_service_key=True)
+        bucket_name = 'gdd_pdfs'
+        
+        # Read PDF file
+        with open(pdf_path, 'rb') as f:
+            pdf_bytes = f.read()
+        
+        # Upload to Supabase Storage
+        client.storage.from_(bucket_name).upload(
+            path=pdf_filename,
+            file=pdf_bytes,
+            file_options={
+                "content-type": "application/pdf",
+                "cache-control": "3600",
+                "upsert": "true"  # Overwrite if exists
+            }
+        )
+        
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"✅ Uploaded PDF to storage: {pdf_filename}")
+        return True
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"❌ Error uploading PDF to storage: {e}")
+        return False
+
+def get_gdd_document_pdf_url(doc_id: str) -> Optional[str]:
+    """
+    Get public URL for PDF from Supabase Storage.
+    
+    First checks the database for pdf_storage_path, then verifies file exists in storage.
+    If exact match not found, tries fuzzy matching against files in bucket.
+    
+    Args:
+        doc_id: Document ID
+    
+    Returns:
+        Public URL to PDF, or None if not found
+    """
+    try:
+        client = get_supabase_client()
+        bucket_name = 'gdd_pdfs'
+        
+        # Get pdf_storage_path from database
+        result = client.table('gdd_documents').select('pdf_storage_path').eq('doc_id', doc_id).limit(1).execute()
+        
+        stored_filename = None
+        if result.data and result.data[0].get('pdf_storage_path'):
+            stored_filename = result.data[0]['pdf_storage_path']
+        
+        # List all files in the bucket to verify existence (use service key for listing)
+        try:
+            # Try with service key first (has admin permissions)
+            try:
+                service_client = get_supabase_client(use_service_key=True)
+                files = service_client.storage.from_(bucket_name).list()
+            except:
+                # Fallback to anon key if service key not available
+                files = client.storage.from_(bucket_name).list()
+            file_names = [f.get('name', '') for f in files] if files else []
+            
+            # Strategy 1: Try exact match with stored filename
+            if stored_filename and stored_filename in file_names:
+                url = client.storage.from_(bucket_name).get_public_url(stored_filename)
+                return url if url else None
+            
+            # Strategy 2: Try doc_id-based filename
+            doc_id_filename = f"{doc_id}.pdf"
+            if doc_id_filename in file_names:
+                url = client.storage.from_(bucket_name).get_public_url(doc_id_filename)
+                return url if url else None
+            
+            # Strategy 3: Fuzzy matching - normalize and compare
+            if stored_filename:
+                # Normalize for comparison (remove spaces, underscores, dashes, case-insensitive)
+                stored_normalized = stored_filename.lower().replace('_', '').replace('-', '').replace(' ', '').replace('.pdf', '')
+                doc_id_normalized = doc_id.lower().replace('_', '').replace('-', '').replace(' ', '')
+                
+                for file_name in file_names:
+                    file_normalized = file_name.lower().replace('_', '').replace('-', '').replace(' ', '').replace('.pdf', '')
+                    
+                    # Check if stored filename matches
+                    if stored_normalized and stored_normalized == file_normalized:
+                        url = client.storage.from_(bucket_name).get_public_url(file_name)
+                        return url if url else None
+                    
+                    # Check if doc_id matches file name
+                    if doc_id_normalized and (doc_id_normalized in file_normalized or file_normalized in doc_id_normalized):
+                        url = client.storage.from_(bucket_name).get_public_url(file_name)
+                        return url if url else None
+            
+            # If no match found, return None
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"PDF not found in storage for {doc_id}. Stored path: {stored_filename}, Available files: {file_names[:5]}")
+            return None
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Error listing files in bucket for {doc_id}: {e}")
+            # Fallback: try to construct URL anyway (might work if file exists)
+            pdf_filename = stored_filename or f"{doc_id}.pdf"
+            url = client.storage.from_(bucket_name).get_public_url(pdf_filename)
+            return url if url else None
+        
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Error getting PDF URL for {doc_id}: {e}")
+        return None
 
 def get_code_files() -> List[Dict[str, Any]]:
     """

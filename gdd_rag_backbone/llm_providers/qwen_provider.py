@@ -217,6 +217,8 @@ class QwenProvider(LlmProvider, EmbeddingProvider):
                     response = client.embeddings.create(
                         model=self.embedding_model,
                         input=texts,  # Send all texts at once
+                        dimensions=self.embedding_dim,
+                        encoding_format="float"
                     )
                     return [item.embedding for item in response.data]
                 except Exception:
@@ -226,6 +228,8 @@ class QwenProvider(LlmProvider, EmbeddingProvider):
                         response = client.embeddings.create(
                             model=self.embedding_model,
                             input=text,
+                            dimensions=self.embedding_dim,
+                            encoding_format="float"
                         )
                         embeddings_list.append(response.data[0].embedding)
                     return embeddings_list

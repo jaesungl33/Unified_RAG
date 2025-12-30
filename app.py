@@ -82,7 +82,8 @@ try:
         upload_and_index_document,
         list_documents,
         get_document_options,
-        query_gdd_documents
+        query_gdd_documents,
+        get_document_sections
     )
     gdd_service_available = True
     app.logger.info("[OK] GDD service imported successfully")
@@ -255,6 +256,44 @@ def gdd_documents():
         app.logger.error(f"Traceback: {traceback.format_exc()}")
         app.logger.info("=" * 60)
         return jsonify({'documents': [], 'options': ['All Documents'], 'error': str(e)})
+
+@app.route('/api/gdd/sections', methods=['GET'])
+def get_gdd_sections():
+    """Get all sections/headers for a specific document"""
+    app.logger.info("=" * 60)
+    app.logger.info("[GDD Sections API] *** ROUTE HIT ***")
+    app.logger.info(f"[GDD Sections API] Request URL: {request.url}")
+    app.logger.info(f"[GDD Sections API] Request method: {request.method}")
+    app.logger.info(f"[GDD Sections API] Request args: {dict(request.args)}")
+    app.logger.info(f"[GDD Sections API] doc_id parameter: {request.args.get('doc_id')}")
+    app.logger.info("=" * 60)
+    
+    try:
+        if not gdd_service_available:
+            app.logger.warning("[GDD Sections API] GDD service not available")
+            return jsonify({'sections': [], 'error': 'GDD service not available'})
+        
+        doc_id = request.args.get('doc_id')
+        if not doc_id:
+            app.logger.warning("[GDD Sections API] Missing doc_id parameter")
+            return jsonify({'sections': [], 'error': 'doc_id parameter required'})
+        
+        app.logger.info(f"[GDD Sections API] Calling get_document_sections for doc_id: {doc_id}")
+        # get_document_sections is already imported at module level
+        sections = get_document_sections(doc_id)
+        app.logger.info(f"[GDD Sections API] Returning {len(sections)} sections for doc_id: {doc_id}")
+        
+        result = {
+            'sections': sections,
+            'doc_id': doc_id
+        }
+        app.logger.info(f"[GDD Sections API] Response: {len(sections)} sections")
+        return jsonify(result)
+    except Exception as e:
+        app.logger.error(f"[GDD Sections API] Error getting sections for document {request.args.get('doc_id')}: {e}")
+        import traceback
+        app.logger.error(f"[GDD Sections API] Traceback: {traceback.format_exc()}")
+        return jsonify({'sections': [], 'error': str(e)})
 
 @app.route('/api/code/query', methods=['POST'])
 def code_query():
@@ -555,6 +594,46 @@ def evaluate_single_requirement():
     except Exception as e:
         app.logger.error(f"Error evaluating single requirement: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
+
+# Add 404 error handler for debugging
+@app.errorhandler(404)
+def not_found_error(error):
+    """Handle 404 errors with detailed logging"""
+    app.logger.error("=" * 60)
+    app.logger.error(f"[404 ERROR] Request to {request.url} not found")
+    app.logger.error(f"[404 ERROR] Path: {request.path}")
+    app.logger.error(f"[404 ERROR] Method: {request.method}")
+    app.logger.error(f"[404 ERROR] Args: {dict(request.args)}")
+    app.logger.error("=" * 60)
+    return jsonify({'error': 'Not found', 'path': request.path, 'method': request.method}), 404
+
+# Log all registered routes after all routes are defined
+def log_all_routes():
+    """Log all registered routes for debugging"""
+    try:
+        with app.app_context():
+            app.logger.info("=" * 60)
+            app.logger.info("All registered routes:")
+            api_routes = []
+            other_routes = []
+            for rule in app.url_map.iter_rules():
+                methods = [m for m in rule.methods if m not in {'HEAD', 'OPTIONS'}]
+                route_info = f"  {rule.rule} [{', '.join(methods)}]"
+                if rule.rule.startswith('/api'):
+                    api_routes.append(route_info)
+                else:
+                    other_routes.append(route_info)
+            
+            for route in sorted(api_routes):
+                app.logger.info(route)
+            for route in sorted(other_routes):
+                app.logger.info(route)
+            app.logger.info("=" * 60)
+    except Exception as e:
+        app.logger.warning(f"Could not log routes: {e}")
+
+# Log routes after all are defined
+log_all_routes()
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))

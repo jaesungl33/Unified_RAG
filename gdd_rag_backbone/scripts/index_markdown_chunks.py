@@ -2,9 +2,9 @@
 Script to index markdown chunks with embeddings and store in separate location.
 
 This script:
-1. Loads chunks from rag_storage_md/
+1. Loads chunks from gdd_data/chunks/
 2. Embeds each chunk using the embedding function
-3. Stores chunks and vectors in rag_storage_md_indexed/
+3. Stores chunks and vectors in gdd_data/summarised_chunks/
 4. Updates document status
 """
 
@@ -20,8 +20,8 @@ from gdd_rag_backbone.config import PROJECT_ROOT
 
 
 # Separate working directory for markdown chunks
-MARKDOWN_WORKING_DIR = PROJECT_ROOT / "rag_storage_md_indexed"
-MARKDOWN_CHUNKS_DIR = PROJECT_ROOT / "rag_storage_md"
+MARKDOWN_WORKING_DIR = PROJECT_ROOT / "gdd_data" / "summarised_chunks"
+MARKDOWN_CHUNKS_DIR = PROJECT_ROOT / "gdd_data" / "chunks"
 
 # Storage file paths (separate from main rag_storage)
 CHUNKS_PATH = MARKDOWN_WORKING_DIR / "kv_store_text_chunks.json"

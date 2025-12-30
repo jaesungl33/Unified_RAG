@@ -17,48 +17,19 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Codebase root (for resolving files from Supabase paths)
-CODEBASE_ROOT = PROJECT_ROOT.parent / "codebase_RAG"
+# Note: We no longer use CODEBASE_ROOT for local file access
+# All file operations now use Supabase only (works on Render)
 
 
 def _resolve_local_code_path(supabase_path: str) -> Optional[Path]:
     """
-    Resolve a Supabase-stored Windows-style path to a local path in the repo.
+    DEPRECATED: This function is no longer used.
+    All file operations now use Supabase only (works on Render).
     
-    Supabase stores absolute Windows paths like:
-    c:\\users\\...\\codebase_rag\\tank_online_1-dev\\Assets\\...
-    
-    We map anything after 'codebase_rag/' onto CODEBASE_ROOT so this works
-    both locally and on Render (where the repo is checked in).
+    Returns None to indicate local file access is not supported.
     """
-    if not supabase_path:
-        return None
-    try:
-        p_norm = str(supabase_path).replace("\\", "/")
-        lower = p_norm.lower()
-        marker = "codebase_rag/"
-        idx = lower.find(marker)
-        if idx != -1:
-            # Portion after codebase_rag/ → relative to CODEBASE_ROOT
-            rel = p_norm[idx + len(marker):]
-            local_path = (CODEBASE_ROOT / rel).resolve()
-            if local_path.exists():
-                return local_path
-        else:
-            # Treat as relative to CODEBASE_ROOT (may include subdirectories)
-            candidate = (CODEBASE_ROOT / p_norm).resolve()
-            if candidate.exists():
-                return candidate
-
-        # If we only have a bare filename (e.g. GameManager.cs), search for it
-        if "/" not in p_norm and "\\" not in p_norm:
-            for found in CODEBASE_ROOT.rglob(p_norm):
-                if found.is_file():
-                    return found.resolve()
-
-        return None
-    except Exception:
-        return None
+    # Local file access is disabled - all operations use Supabase
+    return None
 
 
 def _analyze_csharp_file_symbols(code_text: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -300,9 +271,20 @@ try:
     SUPABASE_AVAILABLE = USE_SUPABASE
     # Use the normalize function from storage module
     normalize_path_consistent = normalize_path_storage
-except ImportError:
+    
+    if not SUPABASE_AVAILABLE:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning("Supabase is configured but USE_SUPABASE is False")
+        logger.warning("Check SUPABASE_URL and SUPABASE_KEY environment variables")
+        
+except ImportError as e:
     SUPABASE_AVAILABLE = False
-    print("Warning: Supabase storage not available for Code Q&A")
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Supabase storage not available for Code Q&A: {e}")
+    logger.warning("This is expected if the 'supabase' package is not installed locally.")
+    logger.warning("On Render, the package should be installed and this will work.")
     
     # Fallback normalize function
     def normalize_path_consistent(p: str) -> Optional[str]:
@@ -767,52 +749,77 @@ def query_codebase(query: str, file_filters: list = None, selected_methods: list
                     logger = logging.getLogger(__name__)
                     logger.info(f"[Code Q&A Extract Full Code] Getting all chunks for file: {file_filters[0]}")
                     
-                    # Get all chunks (both method and class) for this file
+                    # Get only class chunks for this file (simplified - focus on classes first)
                     all_class_chunks = get_code_chunks_for_files(file_filters, chunk_type='class')
-                    all_method_chunks = get_code_chunks_for_files(file_filters, chunk_type='method')
+                    logger.info(f"[Code Q&A Extract Full Code] Found {len(all_class_chunks)} class chunk(s)")
                     
-                    logger.info(f"[Code Q&A Extract Full Code] Found {len(all_class_chunks)} class chunks and {len(all_method_chunks)} method chunks")
-                    
-                    # Reconstruct full file from chunks
-                    # Class chunks contain the full class definition (including fields, properties, and method signatures)
-                    # Method chunks contain individual method implementations
-                    # We'll prioritize class chunks for the main structure, then add method details
-                    
-                    full_code_parts = []
-                    
-                    # Start with class chunks (they contain the class declaration and structure)
-                    for class_chunk in all_class_chunks:
-                        source_code = class_chunk.get('source_code', '')
-                        if source_code:
-                            full_code_parts.append(source_code)
-                    
-                    # If we have class chunks with source_code, use them
-                    if full_code_parts:
-                        # Combine all class chunks (usually there's only one per file)
-                        # If multiple, they might be nested classes - combine them
-                        code_text = "\n\n".join(full_code_parts)
+                    if not all_class_chunks:
+                        logger.warning(f"[Code Q&A Extract Full Code] No class chunks found in Supabase for {file_filters[0]}, falling through to RAG")
+                        pass
+                    else:
+                        # Extract source code from each class chunk
+                        full_code_parts = []
+                        seen_content = set()  # For deduplication
                         
-                        logger.info(f"[Code Q&A Extract Full Code] Reconstructed file from {len(full_code_parts)} class chunk(s), total length: {len(code_text)} chars")
-                        
-                        # Wrap full file in a single code block
-                        return {
-                            "response": f"```csharp\n{code_text}\n```",
-                            "status": "success",
-                            "source_file": file_filters[0],
-                        }
-                    elif all_method_chunks:
-                        # Fallback: if no class chunks, try to reconstruct from method chunks
-                        # This is less ideal but better than nothing
-                        method_sources = []
-                        for method_chunk in all_method_chunks:
-                            method_code = method_chunk.get('code', '') or method_chunk.get('source_code', '')
-                            if method_code:
-                                method_sources.append(method_code)
-                        
-                        if method_sources:
-                            code_text = "\n\n".join(method_sources)
-                            logger.info(f"[Code Q&A Extract Full Code] Reconstructed file from {len(method_sources)} method chunk(s), total length: {len(code_text)} chars")
+                        for class_chunk in all_class_chunks:
+                            source_code = class_chunk.get('source_code', '')
+                            if not source_code:
+                                continue
                             
+                            # Clean metadata headers while preserving indentation
+                            lines = source_code.split('\n')
+                            cleaned_lines = []
+                            skip_next_empty = False
+                            in_code = False
+                            
+                            for line in lines:
+                                stripped = line.strip()
+                                
+                                # Skip "File: ..." lines
+                                if stripped.startswith('File:'):
+                                    skip_next_empty = True
+                                    continue
+                                
+                                # Skip empty line after "File:" line
+                                if skip_next_empty and not stripped:
+                                    skip_next_empty = False
+                                    continue
+                                
+                                # Skip metadata headers (Class:, Source Code:)
+                                if stripped and any(stripped.startswith(prefix) for prefix in ['Class:', 'Source Code:']):
+                                    skip_next_empty = True
+                                    in_code = True  # Code starts after header
+                                    continue
+                                
+                                # Skip empty line after header
+                                if skip_next_empty and not stripped and not in_code:
+                                    skip_next_empty = False
+                                    continue
+                                
+                                skip_next_empty = False
+                                in_code = True
+                                cleaned_lines.append(line)  # Preserve original line with indentation
+                            
+                            # Join and clean up leading/trailing whitespace (but preserve internal indentation)
+                            cleaned_code = '\n'.join(cleaned_lines).strip()
+                            
+                            # Deduplicate: only add if we haven't seen this content before
+                            if cleaned_code and cleaned_code not in seen_content:
+                                seen_content.add(cleaned_code)
+                                full_code_parts.append(cleaned_code)
+                        
+                        # Combine all class chunks with proper spacing
+                        if full_code_parts:
+                            # Join with double newline to separate classes, but preserve internal structure
+                            code_text = "\n\n".join(full_code_parts)
+                            
+                            # Add file path at the top (only once)
+                            file_path_header = f"File: {file_filters[0]}\n\n"
+                            code_text = file_path_header + code_text
+                            
+                            logger.info(f"[Code Q&A Extract Full Code] Reconstructed file from {len(full_code_parts)} class chunk(s), total length: {len(code_text)} chars")
+                            
+                            # Wrap full file in a single code block
                             return {
                                 "response": f"```csharp\n{code_text}\n```",
                                 "status": "success",
@@ -869,7 +876,7 @@ Include: 1) Method parameters (with their types), 2) Local variables declared wi
 FOR GLOBAL/SHARED VARIABLES:
 INCLUDE:
 - Fields declared at class or struct scope (NOT inside any method body)
-- Static fields, instance fields, const and readonly fields
+- Private,constants, Static fields, instance fields, const and readonly fields
 - Properties declared at class scope
 
 EXCLUDE:
@@ -959,8 +966,14 @@ If no global variables are found in the provided class definitions, respond with
                     properties = []
                     
                     if not class_chunks and not method_chunks:
-                        # No chunks found in Supabase - fall through to RAG
-                        logger.warning(f"[Code Q&A Regex Override] No chunks found in Supabase for {file_filters[0]}, falling through to RAG")
+                        # No chunks found in Supabase - try to diagnose why
+                        import os
+                        filename = os.path.basename(file_filters[0]) if file_filters else "unknown"
+                        logger.warning(f"[Code Q&A Regex Override] No chunks found in Supabase for file: {file_filters[0]}")
+                        logger.warning(f"[Code Q&A Regex Override] Filename extracted: {filename}")
+                        logger.warning(f"[Code Q&A Regex Override] This file may not be indexed in Supabase, or the filename matching failed.")
+                        logger.warning(f"[Code Q&A Regex Override] Regex override requires source code from Supabase chunks - falling through to RAG")
+                        logger.warning(f"[Code Q&A Regex Override] NOTE: If this file should be indexed, please ensure it's been indexed in Supabase first.")
                         pass
                     else:
                         # Extract methods from method chunks
@@ -1238,41 +1251,45 @@ If no global variables are found in the provided class definitions, respond with
 def list_indexed_files():
     """
     List all indexed code files.
-    Uses Supabase if available, otherwise falls back to indexed_cs_files.json.
+    Uses Supabase ONLY - no local disk fallback (works on Render).
     
     Returns:
-        list: List of file metadata dictionaries
+        list: List of file metadata dictionaries with keys: file_name, file_path, normalized_path
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
-        # Try Supabase first
-        if SUPABASE_AVAILABLE:
-            try:
-                files = list_code_files_supabase()
-                if files:
-                    return files
-            except Exception as e:
-                print(f"Warning: Failed to load from Supabase, trying fallback: {e}")
+        # Use Supabase only - no local disk fallback
+        if not SUPABASE_AVAILABLE:
+            logger.warning("Supabase not available - cannot list code files")
+            logger.warning("Set SUPABASE_URL and SUPABASE_KEY environment variables")
+            return []
         
-        # Fallback: Load from indexed_cs_files.json (original code_qa format)
-        indexed_cs_json = PROJECT_ROOT / "data" / "indexed_cs_files.json"
-        if indexed_cs_json.exists():
-            try:
-                with open(indexed_cs_json, 'r', encoding='utf-8') as f:
-                    indexed_files = json.load(f)
-                
-                # Convert to expected format
-                files = []
-                for entry in indexed_files:
-                    files.append({
-                        'file_name': entry.get('file_name', ''),
-                        'file_path': entry.get('absolute_path', ''),
-                        'normalized_path': normalize_path_consistent(entry.get('absolute_path', ''))
-                    })
-                return files
-            except Exception as e:
-                print(f"Error loading indexed_cs_files.json: {e}")
+        logger.info("Fetching code files from Supabase...")
+        files = list_code_files_supabase()
         
-        return []
+        if files:
+            logger.info(f"✅ Retrieved {len(files)} code files from Supabase")
+            # Ensure all files have the expected format
+            formatted_files = []
+            for file in files:
+                formatted_files.append({
+                    'file_name': file.get('file_name', ''),
+                    'file_path': file.get('file_path', ''),
+                    'normalized_path': file.get('normalized_path', file.get('file_path', ''))
+                })
+            return formatted_files
+        else:
+            logger.warning("⚠️  No code files found in Supabase")
+            logger.warning("   This could mean:")
+            logger.warning("   1. The code_files table is empty (files haven't been indexed yet)")
+            logger.warning("   2. There's a connection issue with Supabase")
+            logger.warning("   3. RLS policies are blocking access")
+            return []
+        
     except Exception as e:
-        print(f"Error listing code files: {e}")
+        logger.error(f"❌ Error listing code files from Supabase: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return []
