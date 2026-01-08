@@ -104,6 +104,7 @@ def list_documents_from_markdown() -> List[Dict[str, Any]]:
     """
     List all documents from Supabase (no local file dependency).
     Uses Supabase as the only source of truth.
+    Now uses keyword_documents table instead of gdd_documents.
     
     Returns:
         List of document metadata dictionaries
@@ -113,12 +114,30 @@ def list_documents_from_markdown() -> List[Dict[str, Any]]:
         return []
     
     try:
-        supabase_docs_list = list_gdd_documents_supabase()
+        # Use keyword_documents instead of gdd_documents
+        from backend.storage.keyword_storage import list_keyword_documents
+        from backend.storage.supabase_client import get_supabase_client
+        
+        keyword_docs = list_keyword_documents()
         documents = []
         
-        for doc in supabase_docs_list:
+        # Get chunk counts for all documents
+        client = get_supabase_client()
+        chunk_counts = {}
+        if keyword_docs:
+            doc_ids = [doc['doc_id'] for doc in keyword_docs if 'doc_id' in doc]
+            for doc_id in doc_ids:
+                try:
+                    chunks_result = client.table('keyword_chunks').select('id', count='exact').eq('doc_id', doc_id).execute()
+                    chunk_counts[doc_id] = chunks_result.count if hasattr(chunks_result, 'count') else 0
+                except:
+                    chunk_counts[doc_id] = 0
+        
+        for doc in keyword_docs:
             doc_id = doc.get("doc_id", "")
-            chunks_count = doc.get("chunks_count", 0)
+            if not doc_id:
+                continue
+            chunks_count = chunk_counts.get(doc_id, 0)
             name = doc.get("name", doc_id)
             file_path = doc.get("file_path")  # May be None, that's OK
             
@@ -135,6 +154,8 @@ def list_documents_from_markdown() -> List[Dict[str, Any]]:
         import logging
         logger = logging.getLogger(__name__)
         logger.error(f"Warning: Could not load documents from Supabase: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return []
 
 
@@ -168,57 +189,53 @@ def extract_full_document(doc_id: str) -> str:
         except Exception as e:
             logger.debug(f"[Extract Full Doc] PDF URL check failed: {e}")
         
-        # PRIORITY 2: Try to get markdown content directly from gdd_documents table
+        # PRIORITY 2: Try to get full_text from keyword_documents table (if stored)
         try:
             client = get_supabase_client()
-            doc_result = client.table('gdd_documents').select('markdown_content, file_path').eq('doc_id', doc_id).limit(1).execute()
+            doc_result = client.table('keyword_documents').select('full_text, file_path').eq('doc_id', doc_id).limit(1).execute()
             
             if doc_result.data:
                 doc = doc_result.data[0]
-                markdown_content = doc.get('markdown_content')
+                full_text = doc.get('full_text')
                 file_path = doc.get('file_path', '')
                 
-                if markdown_content:
-                    logger.info(f"[Extract Full Doc] Returning markdown_content for {doc_id}")
-                    return markdown_content
-                
-                # PRIORITY 2b: Try reading from file_path if markdown_content not stored
-                pass
+                if full_text:
+                    logger.info(f"[Extract Full Doc] Returning full_text for {doc_id}")
+                    return full_text
         except Exception as e:
-            logger.debug(f"[Extract Full Doc] Error getting markdown_content: {e}")
+            logger.debug(f"[Extract Full Doc] Error getting full_text: {e}")
         
-        # PRIORITY 3 (Fallback): Reconstruct document from chunks if markdown_content not stored
+        # PRIORITY 3 (Fallback): Reconstruct document from chunks if full_text not stored
         try:
             client = get_supabase_client()
             
             # First check if document exists
-            doc_result = client.table('gdd_documents').select('doc_id, file_path').eq('doc_id', doc_id).limit(1).execute()
+            doc_result = client.table('keyword_documents').select('doc_id, file_path').eq('doc_id', doc_id).limit(1).execute()
             if not doc_result.data:
                 return f"Error: Document '{doc_id}' not found in Supabase."
             
-            # Get all chunks for this document, ordered by chunk_id
-            result = client.table('gdd_chunks').select('content, chunk_id, section_path, metadata').eq('doc_id', doc_id).order('chunk_id').execute()
+            # Get all chunks for this document, ordered by chunk_index
+            result = client.table('keyword_chunks').select('content, chunk_id, section_heading, chunk_index').eq('doc_id', doc_id).order('chunk_index').execute()
             
             if not result.data:
-                # Try reading from file_path as last resort
-                return f"Error: Document '{doc_id}' exists in Supabase but has no chunks and no markdown_content. Please re-index the document."
+                return f"Error: Document '{doc_id}' exists in Supabase but has no chunks. Please re-index the document."
             
             # Reconstruct document from chunks
             # Group by section and combine content
             sections = {}
             for chunk in result.data:
-                section_path = chunk.get('section_path', 'Unknown')
+                section_heading = chunk.get('section_heading') or '(No section)'
                 content = chunk.get('content', '')
                 
-                if section_path not in sections:
-                    sections[section_path] = []
-                sections[section_path].append(content)
+                if section_heading not in sections:
+                    sections[section_heading] = []
+                sections[section_heading].append(content)
             
             # Build document
             doc_parts = []
-            for section_path, contents in sorted(sections.items()):
-                if section_path and section_path != 'Unknown':
-                    doc_parts.append(f"## {section_path}\n")
+            for section_heading, contents in sorted(sections.items()):
+                if section_heading and section_heading != '(No section)':
+                    doc_parts.append(f"## {section_heading}\n")
                 doc_parts.append('\n\n'.join(contents))
                 doc_parts.append('\n\n')
             
@@ -411,7 +428,7 @@ def upload_and_index_document_bytes(pdf_bytes: bytes, original_filename: str, pr
 def list_documents():
     """
     List all indexed GDD documents.
-    Uses markdown directory as source of truth, with Supabase for chunk counts.
+    Uses keyword_documents table as source of truth, with Supabase for chunk counts.
     
     Returns:
         list: List of document metadata dictionaries
@@ -424,9 +441,9 @@ def list_documents():
     logger.info(f"SUPABASE_AVAILABLE: {SUPABASE_AVAILABLE}")
     
     try:
-        # Get documents from Supabase (no local file dependency)
+        # Get documents from Supabase keyword_documents table (no local file dependency)
         documents = list_documents_from_markdown()
-        logger.info(f"✅ Loaded {len(documents)} documents from Supabase")
+        logger.info(f"✅ Loaded {len(documents)} documents from keyword_documents table")
         logger.info("=" * 60)
         return documents
     except Exception as e:
@@ -440,14 +457,14 @@ def list_documents():
 def get_document_options():
     """
     Get list of document options for dropdown.
-    Uses markdown directory as source of truth.
-    Shows ALL documents from markdown directory, not just indexed ones.
+    Uses keyword_documents table as source of truth.
+    Shows ALL documents from keyword_documents table, not just indexed ones.
     
     Returns:
         list: List of document option strings
     """
     try:
-        # Get ALL documents from markdown directory (not just indexed)
+        # Get ALL documents from keyword_documents table (not just indexed)
         docs = list_documents_from_markdown()
         
         options = ["All Documents"]
@@ -511,9 +528,9 @@ def get_document_sections(doc_id: str) -> List[Dict[str, str]]:
         
         logger.info(f"[get_document_sections] Querying chunks for doc_id: {doc_id}")
         
-        # Get all unique sections for this document
-        result = client.table('gdd_chunks').select(
-            'section_path, section_title, metadata'
+        # Get all unique sections for this document from keyword_chunks
+        result = client.table('keyword_chunks').select(
+            'section_heading, chunk_index'
         ).eq('doc_id', doc_id).execute()
         
         raw_chunks = result.data or []
@@ -525,7 +542,7 @@ def get_document_sections(doc_id: str) -> List[Dict[str, str]]:
             logger.info(f"[get_document_sections] Attempting to find similar doc_ids...")
             
             # Get all unique doc_ids from chunks
-            all_doc_ids_result = client.table('gdd_chunks').select('doc_id').execute()
+            all_doc_ids_result = client.table('keyword_chunks').select('doc_id').execute()
             all_doc_ids = set()
             for row in (all_doc_ids_result.data or []):
                 all_doc_ids.add(row.get('doc_id'))
@@ -540,8 +557,8 @@ def get_document_sections(doc_id: str) -> List[Dict[str, str]]:
                 actual_doc_id = all_doc_ids_lower[doc_id_lower]
                 logger.info(f"[get_document_sections] Found case-insensitive match: {actual_doc_id}")
                 # Retry with actual doc_id
-                result = client.table('gdd_chunks').select(
-                    'section_path, section_title, metadata'
+                result = client.table('keyword_chunks').select(
+                    'section_heading, chunk_index'
                 ).eq('doc_id', actual_doc_id).execute()
                 raw_chunks = result.data or []
                 logger.info(f"[get_document_sections] Found {len(raw_chunks)} chunks with corrected doc_id")
@@ -568,8 +585,8 @@ def get_document_sections(doc_id: str) -> List[Dict[str, str]]:
                     # Use the first similar one
                     actual_doc_id = similar_doc_ids[0]
                     logger.info(f"[get_document_sections] Using similar doc_id: {actual_doc_id}")
-                    result = client.table('gdd_chunks').select(
-                        'section_path, section_title, metadata'
+                    result = client.table('keyword_chunks').select(
+                        'section_heading, chunk_index'
                     ).eq('doc_id', actual_doc_id).execute()
                     raw_chunks = result.data or []
                     logger.info(f"[get_document_sections] Found {len(raw_chunks)} chunks with similar doc_id")
@@ -579,47 +596,29 @@ def get_document_sections(doc_id: str) -> List[Dict[str, str]]:
         sections_map = {}
         
         for row in raw_chunks:
-            metadata = row.get('metadata', {})
-            if isinstance(metadata, dict):
-                numbered_header = metadata.get('numbered_header', '')
-                section_index = metadata.get('section_index', 999)
-            else:
-                numbered_header = ''
-                section_index = 999
+            section_heading = row.get('section_heading') or ''
+            chunk_index = row.get('chunk_index', 999)
             
-            section_path = row.get('section_path', '')
-            section_title = row.get('section_title', '')
-            
-            # Use numbered_header as key if available, otherwise section_path
-            key = numbered_header if numbered_header else section_path
+            # Use section_heading as key, or create default if empty
+            key = section_heading if section_heading else "(No section)"
             
             # If no section info at all, create a default section entry
-            if not key:
-                # Check if we should skip or create a default section
-                # For now, we'll create a default "Document Content" section
-                # This ensures documents with chunks but no sections still show up
-                key = "Document Content"
-                numbered_header = "Document Content"
-                section_path = ""
-                section_index = 999
+            if not section_heading:
                 logger.debug(f"[get_document_sections] Chunk has no section info, using default section")
             
             # Store section with best available info
             if key not in sections_map:
                 sections_map[key] = {
-                    'section_name': numbered_header if numbered_header else section_path,
-                    'section_path': section_path,
-                    'numbered_header': numbered_header,
-                    'section_index': section_index
+                    'section_name': section_heading if section_heading else "(No section)",
+                    'section_path': section_heading,  # Use section_heading as section_path for compatibility
+                    'numbered_header': section_heading,  # Use section_heading as numbered_header for compatibility
+                    'section_index': chunk_index
                 }
             else:
-                # Update if we have a better numbered_header or lower section_index
+                # Update if we have a lower chunk_index (earlier in document)
                 existing = sections_map[key]
-                if numbered_header and not existing['numbered_header']:
-                    existing['numbered_header'] = numbered_header
-                    existing['section_name'] = numbered_header
-                if section_index < existing['section_index']:
-                    existing['section_index'] = section_index
+                if chunk_index < existing['section_index']:
+                    existing['section_index'] = chunk_index
         
         # Convert to list and sort by section_index
         sections = list(sections_map.values())

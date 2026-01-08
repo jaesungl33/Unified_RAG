@@ -275,11 +275,22 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
         
+        // Remove duplicates based on doc_id (keep first occurrence)
+        const uniqueDocs = [];
+        const seenDocIds = new Set();
+        data.documents.forEach(doc => {
+            const docId = doc.doc_id;
+            if (docId && !seenDocIds.has(docId)) {
+                seenDocIds.add(docId);
+                uniqueDocs.push(doc);
+            }
+        });
+        
         // Get current search term
         const searchTerm = documentSearch.value.toLowerCase().trim();
         
         // Filter documents based on search term
-        const filteredDocs = data.documents.filter(doc => {
+        const filteredDocs = uniqueDocs.filter(doc => {
             if (!searchTerm) return true;
             const displayName = (doc.name || doc.doc_id).toLowerCase();
             const docId = doc.doc_id.toLowerCase();
@@ -336,8 +347,15 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Group documents by derived category for nicer headings
         const groups = {};
+        const seenInGroups = new Set(); // Track doc_ids already added to groups
         
         filteredDocs.forEach(doc => {
+            // Skip if we've already processed this doc_id
+            if (seenInGroups.has(doc.doc_id)) {
+                return;
+            }
+            seenInGroups.add(doc.doc_id);
+            
             const rawName = doc.name || doc.doc_id || 'Unknown';
             const info = parseDocumentName(rawName);
             const groupKey = info.groupLabel || '[Other]';
@@ -376,9 +394,25 @@ document.addEventListener('DOMContentLoaded', function() {
                 const docItem = document.createElement('li');
                 docItem.className = 'document-item';
                 
-                const optionValue = data.options ? 
-                    data.options.find(opt => opt.includes(rawName) || opt.includes(doc.doc_id)) : 
-                    `${rawName} (${doc.doc_id})`;
+                // Find the best matching option value - prefer exact doc_id match
+                let optionValue = null;
+                if (data.options) {
+                    // First try exact doc_id match
+                    optionValue = data.options.find(opt => {
+                        const matchPattern = `(${doc.doc_id})`;
+                        return opt.includes(matchPattern) || opt.endsWith(`(${doc.doc_id})`);
+                    });
+                    // Fallback to name match
+                    if (!optionValue) {
+                        optionValue = data.options.find(opt => 
+                            opt.includes(rawName) || opt.includes(doc.doc_id)
+                        );
+                    }
+                }
+                // Final fallback
+                if (!optionValue) {
+                    optionValue = `${rawName} (${doc.doc_id})`;
+                }
                 
                 if (selectedDocument === optionValue) {
                     docItem.classList.add('selected');
@@ -735,48 +769,135 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function parseDocumentName(rawName) {
-        // Remove extension
+        // Remove extension and normalize
         let base = rawName.replace(/\.[^/.]+$/, '');
-        const parts = base.split('_').filter(p => p);
+        // Replace underscores with spaces for easier pattern matching
+        base = base.replace(/_/g, ' ');
         
-        let groupLabel = '[Other]';
-        let displayTitle = base.replace(/_/g, ' ');
+        // Define the specific group patterns to match
+        const groupPatterns = [
+            { pattern: /^\[Asset,\s*UI\]\s*\[Tank\s+War\]\s*(.+)$/i, label: '[Asset, UI] [Tank War]' },
+            { pattern: /^\[Character\s+Module\]\s*\[Tank\s+War\]\s*(.+)$/i, label: '[Character Module] [Tank War]' },
+            { pattern: /^\[Combat\s+Module\]\s*\[Tank\s+War\]\s*(.+)$/i, label: '[Combat Module] [Tank War]' },
+            { pattern: /^\[Game\s+Mode\s+Module\]\s*\[Tank\s+War\]\s*(.+)$/i, label: '[Game Mode Module] [Tank War]' },
+            { pattern: /^\[Monetization\s+Module\]\s*\[Tank\s+War\]\s*(.+)$/i, label: '[Monetization Module] [Tank War]' },
+            { pattern: /^\[Multiplayer\s+Module\]\s*\[Tank\s+War\]\s*(.+)$/i, label: '[Multiplayer Module] [Tank War]' },
+            { pattern: /^\[Progression\s+Module\]\s*\[Tank\s+War\]\s*(.+)$/i, label: '[Progression Module] [Tank War]' },
+            { pattern: /^\[Progression\s+Module\]\s*\[Tank\s+Wars\]\s*(.+)$/i, label: '[Progression Module] [Tank Wars]' },
+            { pattern: /^\[World\]\s*\[Tank\s+War\]\s*(.+)$/i, label: '[World] [Tank War]' },
+        ];
         
-        if (parts.length >= 2) {
-            const groupPart = toTitleCase(parts[0].replace(/-/g, ' '));
-            
-            // Tokens that belong to the second bracket (Tank War, UI, Module, Mode, etc.)
-            const secondBracketTokens = ['ui', 'module', 'mode', 'tank', 'war'];
-            const subTokens = [];
-            
-            for (let i = 1; i < parts.length; i++) {
-                const token = parts[i];
-                const lower = token.toLowerCase();
-                if (secondBracketTokens.includes(lower)) {
-                    subTokens.push(token);
-                } else {
-                    break;
-                }
+        // Try to match against each pattern
+        for (const { pattern, label } of groupPatterns) {
+            const match = base.match(pattern);
+            if (match) {
+                const displayTitle = match[1].trim();
+                return { 
+                    groupLabel: label, 
+                    displayTitle: displayTitle || base // Fallback to full name if empty
+                };
             }
-            
-            if (subTokens.length > 0) {
-                const secondLabel = toTitleCase(subTokens.join(' ').replace(/-/g, ' '));
-                groupLabel = `[${groupPart}][${secondLabel}]`;
-                const remainder = parts.slice(1 + subTokens.length);
-                if (remainder.length > 0) {
-                    displayTitle = toTitleCase(remainder.join(' ').replace(/_/g, ' '));
-                } else {
-                    displayTitle = toTitleCase(base.replace(/_/g, ' '));
-                }
-            } else {
-                groupLabel = `[${groupPart}]`;
-                displayTitle = toTitleCase(parts.slice(1).join(' ').replace(/_/g, ' '));
-            }
-        } else {
-            displayTitle = toTitleCase(displayTitle.replace(/_/g, ' '));
         }
         
-        return { groupLabel, displayTitle };
+        // Also try matching with underscores (in case the name uses underscores)
+        const baseWithUnderscores = rawName.replace(/\.[^/.]+$/, '');
+        const parts = baseWithUnderscores.split('_').filter(p => p);
+        
+        // Try to reconstruct and match patterns with underscores
+        if (parts.length >= 2) {
+            // Try to match patterns like "Asset_UI_Tank_War" or "Character_Module_Tank_War"
+            const firstPart = parts[0].toLowerCase();
+            const secondPart = parts[1] ? parts[1].toLowerCase() : '';
+            const thirdPart = parts[2] ? parts[2].toLowerCase() : '';
+            const fourthPart = parts[3] ? parts[3].toLowerCase() : '';
+            
+            // Match [Asset, UI] [Tank War]
+            if (firstPart === 'asset' && secondPart === 'ui' && thirdPart === 'tank' && fourthPart === 'war') {
+                const remainder = parts.slice(4);
+                return {
+                    groupLabel: '[Asset, UI] [Tank War]',
+                    displayTitle: remainder.length > 0 ? toTitleCase(remainder.join(' ')) : base.replace(/_/g, ' ')
+                };
+            }
+            
+            // Match [Character Module] [Tank War]
+            if (firstPart === 'character' && secondPart === 'module' && thirdPart === 'tank' && fourthPart === 'war') {
+                const remainder = parts.slice(4);
+                return {
+                    groupLabel: '[Character Module] [Tank War]',
+                    displayTitle: remainder.length > 0 ? toTitleCase(remainder.join(' ')) : base.replace(/_/g, ' ')
+                };
+            }
+            
+            // Match [Combat Module] [Tank War]
+            if (firstPart === 'combat' && secondPart === 'module' && thirdPart === 'tank' && fourthPart === 'war') {
+                const remainder = parts.slice(4);
+                return {
+                    groupLabel: '[Combat Module] [Tank War]',
+                    displayTitle: remainder.length > 0 ? toTitleCase(remainder.join(' ')) : base.replace(/_/g, ' ')
+                };
+            }
+            
+            // Match [Game Mode Module] [Tank War]
+            if (firstPart === 'game' && secondPart === 'mode' && thirdPart === 'module' && parts[3] === 'tank' && parts[4] === 'war') {
+                const remainder = parts.slice(5);
+                return {
+                    groupLabel: '[Game Mode Module] [Tank War]',
+                    displayTitle: remainder.length > 0 ? toTitleCase(remainder.join(' ')) : base.replace(/_/g, ' ')
+                };
+            }
+            
+            // Match [Monetization Module] [Tank War]
+            if (firstPart === 'monetization' && secondPart === 'module' && thirdPart === 'tank' && fourthPart === 'war') {
+                const remainder = parts.slice(4);
+                return {
+                    groupLabel: '[Monetization Module] [Tank War]',
+                    displayTitle: remainder.length > 0 ? toTitleCase(remainder.join(' ')) : base.replace(/_/g, ' ')
+                };
+            }
+            
+            // Match [Multiplayer Module] [Tank War]
+            if (firstPart === 'multiplayer' && secondPart === 'module' && thirdPart === 'tank' && fourthPart === 'war') {
+                const remainder = parts.slice(4);
+                return {
+                    groupLabel: '[Multiplayer Module] [Tank War]',
+                    displayTitle: remainder.length > 0 ? toTitleCase(remainder.join(' ')) : base.replace(/_/g, ' ')
+                };
+            }
+            
+            // Match [Progression Module] [Tank War]
+            if (firstPart === 'progression' && secondPart === 'module' && thirdPart === 'tank' && fourthPart === 'war') {
+                const remainder = parts.slice(4);
+                return {
+                    groupLabel: '[Progression Module] [Tank War]',
+                    displayTitle: remainder.length > 0 ? toTitleCase(remainder.join(' ')) : base.replace(/_/g, ' ')
+                };
+            }
+            
+            // Match [Progression Module] [Tank Wars] (plural)
+            if (firstPart === 'progression' && secondPart === 'module' && thirdPart === 'tank' && fourthPart === 'wars') {
+                const remainder = parts.slice(4);
+                return {
+                    groupLabel: '[Progression Module] [Tank Wars]',
+                    displayTitle: remainder.length > 0 ? toTitleCase(remainder.join(' ')) : base.replace(/_/g, ' ')
+                };
+            }
+            
+            // Match [World] [Tank War]
+            if (firstPart === 'world' && secondPart === 'tank' && thirdPart === 'war') {
+                const remainder = parts.slice(3);
+                return {
+                    groupLabel: '[World] [Tank War]',
+                    displayTitle: remainder.length > 0 ? toTitleCase(remainder.join(' ')) : base.replace(/_/g, ' ')
+                };
+            }
+        }
+        
+        // If no pattern matches, return as [Other]
+        return { 
+            groupLabel: '[Other]', 
+            displayTitle: toTitleCase(base.replace(/_/g, ' '))
+        };
     }
 
     function toTitleCase(str) {

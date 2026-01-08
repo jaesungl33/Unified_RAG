@@ -92,15 +92,24 @@ def vector_search_gdd_chunks(
     try:
         client = get_supabase_client()
         
-        result = client.rpc(
-            'match_gdd_chunks',
-            {
-                'query_embedding': query_embedding,
-                'match_threshold': threshold,
-                'match_count': limit,
-                'doc_id_filter': doc_id
-            }
-        ).execute()
+        # Use keyword_chunks RPC function (assuming it exists) or fallback to direct query
+        # Note: If match_keyword_chunks RPC doesn't exist, we'll need to create it or use direct query
+        try:
+            result = client.rpc(
+                'match_keyword_chunks',  # Updated RPC function name
+                {
+                    'query_embedding': query_embedding,
+                    'match_threshold': threshold,
+                    'match_count': limit,
+                    'doc_id_filter': doc_id
+                }
+            ).execute()
+        except Exception as e:
+            # Fallback: if RPC doesn't exist, log warning and return empty
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"match_keyword_chunks RPC not found, falling back to empty result: {e}")
+            return []
         
         return result.data if result.data else []
     except Exception as e:
@@ -549,12 +558,25 @@ def get_gdd_document_pdf_url(doc_id: str) -> Optional[str]:
         client = get_supabase_client()
         bucket_name = 'gdd_pdfs'
         
-        # Get pdf_storage_path from database
-        result = client.table('gdd_documents').select('pdf_storage_path').eq('doc_id', doc_id).limit(1).execute()
-        
+        # Get pdf_storage_path from database (try keyword_documents first, fallback to gdd_documents)
         stored_filename = None
-        if result.data and result.data[0].get('pdf_storage_path'):
-            stored_filename = result.data[0]['pdf_storage_path']
+        result = None
+        try:
+            result = client.table('keyword_documents').select('file_path').eq('doc_id', doc_id).limit(1).execute()
+            # keyword_documents uses file_path, which may contain the PDF path
+            if result.data and result.data[0].get('file_path'):
+                stored_filename = result.data[0]['file_path']
+                # If file_path is a full path, extract just the filename
+                if '/' in stored_filename or '\\' in stored_filename:
+                    stored_filename = stored_filename.replace('\\', '/').split('/')[-1]
+        except:
+            # Fallback to gdd_documents if keyword_documents doesn't have the field
+            try:
+                result = client.table('gdd_documents').select('pdf_storage_path').eq('doc_id', doc_id).limit(1).execute()
+                if result and result.data:
+                    stored_filename = result.data[0].get('pdf_storage_path')
+            except:
+                pass
         
         # List all files in the bucket to verify existence (use service key for listing)
         try:

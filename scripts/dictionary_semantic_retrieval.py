@@ -10,12 +10,23 @@ if str(PROJECT_ROOT) not in sys.path:
 from backend.dictionary_retrieval import dictionary_semantic_retrieval
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description="Dictionary-first semantic retrieval",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python scripts/dictionary_semantic_retrieval.py --q "tank"
+  python scripts/dictionary_semantic_retrieval.py --q "garage" --doc_id "Asset_UI_Tank_War_Main_Screen_Design"
+        """
+    )
     ap.add_argument("--q", required=True, help="Natural query (EN or VI)")
     ap.add_argument("--doc_id", help="Restrict output to this document (optional)")
     args = ap.parse_args()
-
-    result = dictionary_semantic_retrieval(args.q, restrict_doc_id=args.doc_id)
+    
+    result = dictionary_semantic_retrieval(
+        args.q, 
+        restrict_doc_id=args.doc_id
+    )
 
     # Pretty print: component -> document -> section
     if result.get("status") != "success":

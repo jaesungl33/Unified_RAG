@@ -98,28 +98,25 @@ def load_gdd_chunks_from_supabase(
     for doc_id in doc_ids:
         logger.info(f"[load_gdd_chunks_from_supabase] Querying doc_id: {doc_id}")
         
-        # Build query with filters
-        query = client.table('gdd_chunks').select('chunk_id, doc_id, content, section_path, content_type, metadata').eq('doc_id', doc_id)
+        # Build query with filters - using keyword_chunks table
+        query = client.table('keyword_chunks').select('chunk_id, doc_id, content, section_heading, chunk_index').eq('doc_id', doc_id)
         
-        # Apply section_path filter (match by name only, ignore numbers)
+        # Apply section_heading filter (match by name only, ignore numbers)
         # NOTE: This is a soft filter - we load chunks and let vector search prioritize
         # Only apply if we don't have numbered_header_filter (to avoid double-filtering)
         if section_path_filter and not numbered_header_filter:
             # Strip numbers from filter to match by name only
             section_name_only = _strip_section_number(section_path_filter)
-            logger.info(f"[load_gdd_chunks_from_supabase] Applying section_path filter: {section_name_only}")
-            query = query.ilike('section_path', f'%{section_name_only}%')
+            logger.info(f"[load_gdd_chunks_from_supabase] Applying section_heading filter: {section_name_only}")
+            query = query.ilike('section_heading', f'%{section_name_only}%')
         elif section_path_filter and numbered_header_filter:
             # If both are set, prefer numbered_header_filter (more precise)
-            # But still apply section_path as a soft filter
+            # But still apply section_heading as a soft filter
             section_name_only = _strip_section_number(section_path_filter)
-            logger.info(f"[load_gdd_chunks_from_supabase] Applying section_path filter (with numbered_header): {section_name_only}")
-            query = query.ilike('section_path', f'%{section_name_only}%')
+            logger.info(f"[load_gdd_chunks_from_supabase] Applying section_heading filter (with numbered_header): {section_name_only}")
+            query = query.ilike('section_heading', f'%{section_name_only}%')
         
-        # Apply content_type filter
-        if content_type_filter:
-            logger.info(f"[load_gdd_chunks_from_supabase] Applying content_type filter: {content_type_filter}")
-            query = query.eq('content_type', content_type_filter)
+        # Note: content_type filter removed - keyword_chunks doesn't have this field
         
         result = query.execute()
         logger.info(f"[load_gdd_chunks_from_supabase] Retrieved {len(result.data or [])} raw chunks from Supabase for doc_id: {doc_id}")
@@ -131,37 +128,26 @@ def load_gdd_chunks_from_supabase(
             chunk_id = row.get('chunk_id', '')
             content = row.get('content', '')
             result_doc_id = row.get('doc_id', '')
-            section_path = row.get('section_path', '')
+            section_heading = row.get('section_heading') or ''
             
             chunks_before_header_filter += 1
             
-            # Apply numbered_header filter from metadata if specified (match by name only, ignore numbers)
+            # Apply numbered_header filter from section_heading if specified (match by name only, ignore numbers)
             if numbered_header_filter:
-                metadata = row.get('metadata', {})
-                numbered_header = metadata.get('numbered_header', '') if isinstance(metadata, dict) else ''
                 # Strip numbers from both filter and header for name-only matching
                 filter_name = _strip_section_number(numbered_header_filter).lower().strip()
-                header_name = _strip_section_number(str(numbered_header)).lower().strip()
-                # Also check section_path as fallback
-                section_path_name = _strip_section_number(section_path).lower().strip()
-                # Match if filter name is in header name OR header name is in filter name (for partial matches)
+                section_heading_name = _strip_section_number(str(section_heading)).lower().strip()
+                # Match if filter name is in section heading OR section heading is in filter name (for partial matches)
                 # Also check if they're equal (exact match after stripping numbers)
                 # Make matching more lenient - remove spaces and special chars for comparison
                 filter_clean = re.sub(r'[^\w]', '', filter_name.lower())
-                header_clean = re.sub(r'[^\w]', '', header_name.lower())
-                section_clean = re.sub(r'[^\w]', '', section_path_name.lower())
+                section_clean = re.sub(r'[^\w]', '', section_heading_name.lower())
                 
                 matches = (
-                    filter_name == header_name or
-                    filter_name in header_name or
-                    header_name in filter_name or
-                    filter_name == section_path_name or
-                    filter_name in section_path_name or
-                    section_path_name in filter_name or
+                    filter_name == section_heading_name or
+                    filter_name in section_heading_name or
+                    section_heading_name in filter_name or
                     # More lenient: compare cleaned versions
-                    filter_clean == header_clean or
-                    filter_clean in header_clean or
-                    header_clean in filter_clean or
                     filter_clean == section_clean or
                     filter_clean in section_clean or
                     section_clean in filter_clean
@@ -172,9 +158,8 @@ def load_gdd_chunks_from_supabase(
                     logger.info(f"[load_gdd_chunks_from_supabase] Chunk {chunks_before_header_filter}:")
                     logger.info(f"  - chunk_id: {chunk_id}")
                     logger.info(f"  - doc_id: {result_doc_id}")
-                    logger.info(f"  - section_path: {section_path}")
-                    logger.info(f"  - numbered_header: {numbered_header}")
-                    logger.info(f"  - filter_name: '{filter_name}' vs header_name: '{header_name}' vs section_name: '{section_path_name}'")
+                    logger.info(f"  - section_heading: {section_heading}")
+                    logger.info(f"  - filter_name: '{filter_name}' vs section_heading_name: '{section_heading_name}'")
                     logger.info(f"  - matches: {matches}")
                     logger.info(f"  - content preview: {content[:150]}...")
                 
@@ -225,7 +210,7 @@ def load_gdd_vectors_from_supabase(doc_ids: List[str], normalize: bool = True) -
     
     for doc_id in doc_ids:
         # Get all chunks with embeddings for this doc_id
-        result = client.table('gdd_chunks').select('chunk_id, doc_id, embedding').eq('doc_id', doc_id).execute()
+        result = client.table('keyword_chunks').select('chunk_id, doc_id, embedding').eq('doc_id', doc_id).execute()
         
         for row in (result.data or []):
             chunk_id = row.get('chunk_id', '')  # Full format: {doc_id}_{chunk_id}
@@ -533,14 +518,14 @@ def get_gdd_top_chunks_supabase(
     for score, record in selected:
         # Get full metadata from Supabase
         try:
-            meta_result = client.table('gdd_chunks').select('section_path, section_title, content_type, metadata').eq('chunk_id', record.chunk_id).limit(1).execute()
+            meta_result = client.table('keyword_chunks').select('section_heading').eq('chunk_id', record.chunk_id).limit(1).execute()
             if meta_result.data:
                 meta = meta_result.data[0]
-                section_path = meta.get('section_path', '')
-                section_title = meta.get('section_title', '')
-                content_type = meta.get('content_type', '')
-                chunk_metadata = meta.get('metadata', {})
-                numbered_header = chunk_metadata.get('numbered_header', '') if isinstance(chunk_metadata, dict) else ''
+                section_heading = meta.get('section_heading') or ''
+                section_path = section_heading  # Use section_heading as section_path for compatibility
+                section_title = section_heading  # Use section_heading as section_title for compatibility
+                content_type = ''  # keyword_chunks doesn't have content_type
+                numbered_header = section_heading  # Use section_heading as numbered_header for compatibility
             else:
                 section_path = section_title = content_type = numbered_header = ''
         except Exception:

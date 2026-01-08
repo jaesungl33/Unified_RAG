@@ -13,7 +13,7 @@ import logging
 import uuid
 import threading
 from time import sleep
-from backend.gdd_service import upload_and_index_document_bytes
+# from backend.gdd_service import upload_and_index_document_bytes  # Now using keyword_extractor backend
 
 
 # --- Simple in-memory progress tracking and job execution ---
@@ -52,21 +52,24 @@ def get_job(job_id):
 
 
 def run_upload_pipeline_async(job_id, pdf_bytes, filename):
-    # Progress callback used by gdd_service
+    # Progress callback used by document_service (keyword_extractor backend)
     def progress_cb(step_text):
         update_job(job_id, step=step_text)
 
     try:
-        update_job(job_id, step="Converting to Markdown")
-        # Modify gdd_service.upload_and_index_document_bytes to accept progress_cb
-        result = upload_and_index_document_bytes(pdf_bytes, filename, progress_cb=progress_cb)
-        # result is dict: {"status": "success|error", "message": "...", "doc_id": "..."}
+        update_job(job_id, step="Starting upload")
+        # Use keyword_extractor's document_service.upload_and_index_document
+        from backend.services.document_service import upload_and_index_document
+        result = upload_and_index_document(pdf_bytes, filename, progress_callback=progress_cb)
+        # result is dict: {"status": "success|error", "message": "...", "doc_id": "...", "chunks_count": ...}
         if result.get("status") == "success":
             update_job(job_id, status="success", step="Completed", message=result.get("message"), doc_id=result.get("doc_id"))
         else:
             update_job(job_id, status="error", step="Failed", message=result.get("message"))
     except Exception as e:
-        update_job(job_id, status="error", step="Failed", message=str(e))
+        import traceback
+        error_msg = str(e) + "\n" + traceback.format_exc()
+        update_job(job_id, status="error", step="Failed", message=error_msg)
 
 
 # Load environment variables
@@ -270,11 +273,9 @@ def gdd_upload_status():
 
 @app.route('/api/gdd/upload', methods=['POST'])
 def gdd_upload():
-    """Start an async upload + index job and return a job_id immediately."""
+    """Start an async upload + index job and return a job_id immediately.
+    Uses keyword_extractor backend to store in keyword_documents/keyword_chunks tables."""
     try:
-        if not gdd_service_available:
-            return jsonify({'status': 'error', 'message': 'GDD service not available'}), 500
-
         if 'file' not in request.files:
             return jsonify({'status': 'error', 'message': 'No file provided'}), 400
 
@@ -292,37 +293,100 @@ def gdd_upload():
         return jsonify({'status': 'accepted', 'job_id': job_id, 'step': 'Uploading file'}), 202
 
     except Exception as e:
-        app.logger.error(f"Error in GDD upload: {e}")
+        app.logger.error(f"Error in upload: {e}")
+        import traceback
+        app.logger.error(traceback.format_exc())
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 
 @app.route('/api/gdd/documents', methods=['GET'])
 def gdd_documents():
-    """List all indexed GDD documents"""
+    """List all indexed GDD documents (from both gdd_documents and keyword_documents tables)"""
     app.logger.info("=" * 60)
     app.logger.info("GET /api/gdd/documents - Starting request")
     
     try:
-        if not gdd_service_available:
-            app.logger.warning("GDD service not available")
-            return jsonify({'documents': [], 'options': ['All Documents']})
+        all_documents = []
+        gdd_docs_count = 0
+        keyword_docs_count = 0
         
-        app.logger.info("GDD service is available, calling list_documents()...")
-        documents = list_documents()
-        app.logger.info(f"list_documents() returned {len(documents)} documents")
+        # Get documents from GDD service (gdd_documents table) - may not exist
+        if gdd_service_available:
+            try:
+                app.logger.info("GDD service is available, calling list_documents()...")
+                gdd_docs = list_documents()
+                gdd_docs_count = len(gdd_docs) if gdd_docs else 0
+                app.logger.info(f"list_documents() returned {gdd_docs_count} documents from gdd_documents table")
+                if gdd_docs:
+                    all_documents.extend(gdd_docs)
+            except Exception as e:
+                app.logger.warning(f"Could not load GDD documents (table may not exist): {e}")
+                gdd_docs_count = 0
         
-        if documents:
-            app.logger.info(f"Sample document: {documents[0].get('name', 'N/A')}")
+        # Get documents from keyword_extractor backend (keyword_documents table)
+        try:
+            from backend.storage.keyword_storage import list_keyword_documents
+            from backend.storage.supabase_client import get_supabase_client
+            
+            keyword_docs = list_keyword_documents()
+            keyword_docs_count = len(keyword_docs) if keyword_docs else 0
+            app.logger.info(f"list_keyword_documents() returned {keyword_docs_count} documents from keyword_documents table")
+            
+            # Get chunk counts for all documents in one query (more efficient)
+            chunk_counts = {}
+            if keyword_docs:
+                try:
+                    client = get_supabase_client()
+                    # Get all doc_ids
+                    doc_ids = [doc['doc_id'] for doc in keyword_docs if 'doc_id' in doc]
+                    if doc_ids:
+                        # Query chunk counts grouped by doc_id
+                        for doc_id in doc_ids:
+                            try:
+                                chunks_result = client.table('keyword_chunks').select('id', count='exact').eq('doc_id', doc_id).execute()
+                                chunk_counts[doc_id] = chunks_result.count if hasattr(chunks_result, 'count') else 0
+                            except:
+                                chunk_counts[doc_id] = 0
+                except Exception as e:
+                    app.logger.warning(f"Could not fetch chunk counts: {e}")
+            
+            # Convert keyword_documents format to match gdd_documents format
+            for doc in keyword_docs:
+                # Ensure doc has required fields for GDD RAG
+                if 'doc_id' not in doc:
+                    continue
+                
+                doc_id = doc['doc_id']
+                # Add chunks_count from our pre-fetched counts
+                doc['chunks_count'] = chunk_counts.get(doc_id, 0)
+                
+                # Ensure status field exists
+                if 'status' not in doc:
+                    doc['status'] = 'ready' if doc.get('chunks_count', 0) > 0 else 'indexed'
+                
+                all_documents.append(doc)
+        except Exception as e:
+            app.logger.warning(f"Could not load keyword documents: {e}")
+            import traceback
+            app.logger.warning(f"Traceback: {traceback.format_exc()}")
         
-        app.logger.info("Calling get_document_options()...")
-        options = get_document_options()
-        app.logger.info(f"get_document_options() returned {len(options)} options")
+        app.logger.info(f"Total documents: {len(all_documents)} (GDD: {gdd_docs_count}, Keyword: {keyword_docs_count})")
         
-        app.logger.info(f"Returning response with {len(documents)} documents and {len(options)} options")
+        if all_documents:
+            app.logger.info(f"Sample document: {all_documents[0].get('name', 'N/A')}")
+        
+        # Generate options for dropdown
+        options = ["All Documents"]
+        for doc in sorted(all_documents, key=lambda x: x.get("doc_id", "")):
+            doc_id = doc.get("doc_id", "")
+            name = doc.get("name", doc_id)
+            options.append(f"{name} ({doc_id})")
+        
+        app.logger.info(f"Returning response with {len(all_documents)} documents and {len(options)} options")
         app.logger.info("=" * 60)
         return jsonify({
-            'documents': documents,
+            'documents': all_documents,
             'options': options
         })
     except Exception as e:
@@ -369,6 +433,80 @@ def get_gdd_sections():
         import traceback
         app.logger.error(f"[GDD Sections API] Traceback: {traceback.format_exc()}")
         return jsonify({'sections': [], 'error': str(e)})
+
+# Document Explainer routes (Tab 2)
+@app.route('/api/gdd/explainer/search', methods=['POST'])
+def explainer_search():
+    """Search for keyword and return document/section options"""
+    try:
+        from backend.gdd_explainer import search_for_explainer
+        
+        data = request.get_json()
+        keyword = data.get('keyword', '')
+        
+        result = search_for_explainer(keyword)
+        return jsonify(result)
+    except Exception as e:
+        app.logger.error(f"Error in explainer search: {e}")
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return jsonify({
+            'choices': [],
+            'store_data': [],
+            'status_msg': f"❌ Error: {str(e)}",
+            'success': False
+        }), 500
+
+@app.route('/api/gdd/explainer/explain', methods=['POST'])
+def explainer_explain():
+    """Generate explanation from selected items"""
+    try:
+        from backend.gdd_explainer import generate_explanation
+        
+        data = request.get_json()
+        keyword = data.get('keyword', '')
+        selected_choices = data.get('selected_choices', [])
+        stored_results = data.get('stored_results', [])
+        
+        result = generate_explanation(keyword, selected_choices, stored_results)
+        return jsonify(result)
+    except Exception as e:
+        app.logger.error(f"Error in explainer explain: {e}")
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return jsonify({
+            'explanation': f"❌ Error: {str(e)}",
+            'source_chunks': '',
+            'metadata': '',
+            'success': False
+        }), 500
+
+@app.route('/api/gdd/explainer/select-all', methods=['POST'])
+def explainer_select_all():
+    """Select all items"""
+    try:
+        from backend.gdd_explainer import select_all_items
+        
+        data = request.get_json()
+        stored_results = data.get('stored_results', [])
+        
+        result = select_all_items(stored_results)
+        return jsonify(result)
+    except Exception as e:
+        app.logger.error(f"Error in explainer select-all: {e}")
+        return jsonify({'choices': []}), 500
+
+@app.route('/api/gdd/explainer/select-none', methods=['POST'])
+def explainer_select_none():
+    """Deselect all items"""
+    try:
+        from backend.gdd_explainer import select_none_items
+        
+        result = select_none_items()
+        return jsonify(result)
+    except Exception as e:
+        app.logger.error(f"Error in explainer select-none: {e}")
+        return jsonify({'choices': []}), 500
 
 @app.route('/api/code/query', methods=['POST'])
 def code_query():
@@ -484,7 +622,8 @@ def debug_supabase():
         # Test Supabase connection
         if supabase_url and supabase_key:
             try:
-                from backend.storage.supabase_client import get_supabase_client, get_gdd_documents, get_code_files
+                from backend.storage.supabase_client import get_supabase_client, get_code_files
+                from backend.storage.keyword_storage import list_keyword_documents
                 
                 # Test anon key connection
                 client = get_supabase_client(use_service_key=False)
@@ -492,18 +631,20 @@ def debug_supabase():
                 
                 # Test data access
                 try:
-                    gdd_docs = get_gdd_documents()
-                    diagnostics['data_access']['gdd_documents'] = {
-                        'count': len(gdd_docs),
-                        'status': 'SUCCESS' if len(gdd_docs) > 0 else 'EMPTY'
+                    # Note: gdd_documents table may not exist, using keyword_documents instead
+                    from backend.storage.keyword_storage import list_keyword_documents
+                    keyword_docs = list_keyword_documents()
+                    diagnostics['data_access']['keyword_documents'] = {
+                        'count': len(keyword_docs) if keyword_docs else 0,
+                        'status': 'SUCCESS' if keyword_docs and len(keyword_docs) > 0 else 'EMPTY'
                     }
-                    if len(gdd_docs) > 0:
-                        diagnostics['data_access']['gdd_sample'] = {
-                            'doc_id': gdd_docs[0].get('doc_id'),
-                            'name': gdd_docs[0].get('name')
+                    if keyword_docs and len(keyword_docs) > 0:
+                        diagnostics['data_access']['keyword_sample'] = {
+                            'doc_id': keyword_docs[0].get('doc_id'),
+                            'name': keyword_docs[0].get('name')
                         }
                 except Exception as e:
-                    diagnostics['data_access']['gdd_documents'] = {
+                    diagnostics['data_access']['keyword_documents'] = {
                         'count': 0,
                         'status': 'ERROR',
                         'error': str(e)

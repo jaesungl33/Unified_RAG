@@ -27,6 +27,10 @@ REGION = os.getenv('REGION', 'intl')
 DEFAULT_LLM_MODEL = os.getenv('DEFAULT_LLM_MODEL', 'qwen-plus')
 DEFAULT_EMBEDDING_MODEL = os.getenv('DEFAULT_EMBEDDING_MODEL', 'text-embedding-v4')
 
+# Chunking configuration (for keyword extractor backend)
+CHUNK_SIZE = int(os.getenv('CHUNK_SIZE', 500))
+CHUNK_OVERLAP = float(os.getenv('CHUNK_OVERLAP', 0.15))
+
 # Redis configuration (optional)
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))

@@ -4,41 +4,88 @@
 
 {% block content %}
 <div class="gdd-container">
-    <div class="upload-section">
-        <h3>Upload Document</h3>
-        <input type="file" id="file-upload" accept=".pdf">
-        <button id="upload-btn" class="btn-primary">Upload & Index</button>
-        <div id="upload-status"></div>
+    <!-- Tab Navigation -->
+    <div class="tab-navigation">
+        <button class="tab-btn active" data-tab="rag">GDD RAG</button>
+        <button class="tab-btn" data-tab="explainer">Document Explainer</button>
     </div>
     
-    <div class="layout">
-        <div class="sidebar">
-            <h2>Indexed Documents</h2>
-            <input type="text" id="document-search" class="document-search" placeholder="Search documents...">
-            <p style="font-size:0.8rem;margin:4px 0 8px 0;">
-                Click a document to filter queries to that document.
-            </p>
-            <div id="documents-list">
-                <p>Loading documents...</p>
-            </div>
+    <!-- Tab 1: GDD RAG (existing functionality) -->
+    <div id="tab-rag" class="tab-content active">
+        <div class="upload-section">
+            <h3>Upload Document</h3>
+            <input type="file" id="file-upload" accept=".pdf">
+            <button id="upload-btn" class="btn-primary">Upload & Index</button>
+            <div id="upload-status"></div>
         </div>
         
-        <div class="main-panel">
-            <div class="chat-container" id="chat-container">
-                <div class="message bot-message" id="gdd-welcome-message">
-                    Welcome! Upload a document or select one from the sidebar to start querying.
+        <div class="layout">
+            <div class="sidebar">
+                <h2>Indexed Documents</h2>
+                <input type="text" id="document-search" class="document-search" placeholder="Search documents...">
+                <p style="font-size:0.8rem;margin:4px 0 8px 0;">
+                    Click a document to filter queries to that document.
+                </p>
+                <div id="documents-list">
+                    <p>Loading documents...</p>
+                </div>
+            </div>
+            
+            <div class="main-panel">
+                <div class="chat-container" id="chat-container">
+                    <div class="message bot-message" id="gdd-welcome-message">
+                        Welcome! Upload a document or select one from the sidebar to start querying.
+                    </div>
                 </div>
             </div>
         </div>
+        
+        <div class="input-area">
+            <input type="text" id="query-input" placeholder="Ask a question about the game design documents...">
+            <button id="send-btn" class="btn-primary">Send</button>
+            <button id="clear-chat-btn" class="btn-secondary">Clear Chat</button>
+        </div>
     </div>
     
-    <div class="input-area">
-        <input type="text" id="query-input" placeholder="Ask a question about the game design documents...">
-        <button id="send-btn" class="btn-primary">Send</button>
-        <button id="clear-chat-btn" class="btn-secondary">Clear Chat</button>
+    <!-- Tab 2: Document Explainer (NEW) -->
+    <div id="tab-explainer" class="tab-content" style="display: none;">
+        <div class="explainer-section">
+            <h3>Get Detailed Explanations from Documents</h3>
+            <p>Enter a keyword, select documents/sections, and get AI-generated explanations.</p>
+            
+            <!-- Keyword Input Row -->
+            <div class="input-row">
+                <input type="text" id="explainer-keyword" 
+                       placeholder="e.g., tank movement, combat system, progression" 
+                       class="input-field">
+                <button id="explainer-search-btn" class="btn-secondary">Search</button>
+            </div>
+            
+            <!-- Search Status -->
+            <div id="search-status" class="status-message" style="display: none;"></div>
+            
+            <!-- Checkbox Group Container -->
+            <div id="explainer-results-container" style="display: none;">
+                <label class="checkbox-label">Search Results - Select Documents/Sections to Explain</label>
+                <div id="explainer-results-checkboxes" class="checkbox-group"></div>
+            </div>
+            
+            <!-- Action Buttons -->
+            <div class="button-row">
+                <button id="select-all-btn" class="btn-secondary">Select All</button>
+                <button id="select-none-btn" class="btn-secondary">Select None</button>
+                <button id="explain-btn" class="btn-primary">Generate Explanation</button>
+            </div>
+            
+            <!-- Output Areas (Markdown) -->
+            <div id="explanation-output" class="markdown-output"></div>
+            <div id="source-chunks-output" class="markdown-output"></div>
+            <div id="metadata-output" class="markdown-output"></div>
+        </div>
     </div>
 </div>
 
 <script src="{{ url_for('static', filename='js/gdd.js') }}"></script>
+<script src="{{ url_for('static', filename='js/explainer.js') }}"></script>
 {% endblock %}
 

@@ -73,6 +73,14 @@ MAX_REF_PER_SEED = 1000     # practical cap per seed; NO top-K in final results
 MAX_CHUNKS_PER_DOC_LOAD = 5000  # guard (not used directly in this module)
 
 # ----------------------------
+# Retrieval Mode Enum
+# ----------------------------
+class RetrievalMode:
+    COMPONENTS = "components"
+    UI = "ui"
+    BOTH = "both"
+
+# ----------------------------
 # Phase 2: Intent Expansion LLM prompt (VN-only terms)
 # ----------------------------
 INTENT_SYSTEM_PROMPT = """
@@ -195,6 +203,7 @@ def _embedding_match_score(q_vec: List[float], comp_vec: List[float]) -> float:
 # ----------------------------
 # Phase 3: Seed Component Detection (ranking allowed here only)
 # ----------------------------
+GENERIC_KEYS = {"tank", "player", "system", "logic", "mechanic"}
 def detect_seed_components(client_sb, provider, query_vi: str, intent_terms: List[str]) -> List[Dict[str, Any]]:
     """Returns a small seed set of components (dict rows) passing HIGH_THRESHOLD or exact alias."""
     emb_func = make_embedding_func(provider)
@@ -217,47 +226,94 @@ def detect_seed_components(client_sb, provider, query_vi: str, intent_terms: Lis
         except Exception:
             pass
 
+
         s_emb = _embedding_match_score(q_vec, comp_vec)
         s_alias = _alias_match_score(query_vi, c)
         s_intent = max(_alias_match_score(t, c) for t in intent_terms) if intent_terms else 0.0
-        raw_score = max(s_emb, s_alias, s_intent)
-        scored.append((raw_score, c))
 
-    # Optional cross-encoder rerank using short evidence snippets
-    pairs = []
-    for _, c in scored:
-        refs = client_sb.table("dictionary_references").select("evidence_text_vi").eq("component_key", c["component_key"]).limit(3).execute().data or []
-        evid_text = " ".join(r.get("evidence_text_vi", "") for r in refs) or c.get("display_name_vi", "")
-        pairs.append({"content": evid_text})
+        # ---- Alias-gated seed logic (NO max()) ----
+        is_exact_alias = s_alias >= 0.95
+        is_alias_anchor = s_alias >= 0.80
+        has_semantic_support = s_emb >= 0.65
+        has_intent_support = s_intent >= 0.75
 
-    if USE_CROSS_ENCODER:
+        # Generic container guard
+        
+        if c.get("component_key") in GENERIC_KEYS and not is_exact_alias:
+            continue
+
+        # Determine if this component can be a seed
+        is_seed_candidate = (
+            is_exact_alias or
+            (is_alias_anchor and (has_semantic_support or has_intent_support))
+        )
+
+        # Score used ONLY for ordering (not eligibility)
+        ranking_score = (
+            0.6 * s_alias +
+            0.25 * s_emb +
+            0.15 * s_intent
+        )
+
+        if is_seed_candidate:
+            scored.append((ranking_score, c))
+
+
+    # Only rerank alias-anchored candidates
+    alias_candidates = [
+        (score, c) for (score, c) in scored
+        if _alias_match_score(query_vi, c) >= 0.75
+    ]
+
+    if USE_CROSS_ENCODER and alias_candidates:
         logger.info("[Phase 3] Cross-encoder reranking...")
         try:
-            reranked = _rerank_with_cross_encoder(query_vi, pairs, provider=provider, top_n=len(pairs))
-            ce_map = {i: score for i, (score, _) in enumerate(reranked)}
+            pairs = []
+            for _, c in alias_candidates:
+                refs = client_sb.table("dictionary_references") \
+                    .select("evidence_text_vi") \
+                    .eq("component_key", c["component_key"]) \
+                    .limit(3).execute().data or []
+                evid_text = " ".join(r.get("evidence_text_vi", "") for r in refs) \
+                    or c.get("display_name_vi", "")
+                pairs.append({"content": evid_text})
+
+            reranked = _rerank_with_cross_encoder(
+                query_vi, pairs, provider=provider, top_n=len(pairs)
+            )
+
+            # Apply CE scores back ONLY to alias_candidates
             blended = []
-            for i, (raw, c) in enumerate(scored):
-                blended.append((max(raw, ce_map.get(i, 0.0))), c)
-            # Sort by blended score desc (ranking still only for seeds)
-            scored = sorted(blended, key=lambda x: x[0], reverse=True)
+            for i, ((raw, c), (ce_score, _)) in enumerate(zip(alias_candidates, reranked)):
+                final_score = 0.7 * raw + 0.3 * ce_score
+                blended.append((final_score, c))
+
+            scored = blended
             logger.info("[Phase 3] Cross-encoder reranking complete")
         except Exception as e:
             logger.info(f"[Phase 3] Cross-encoder rerank skipped: {e}")
 
+
     # Select seeds deterministically (threshold or exact alias)
     seeds: List[Dict[str, Any]] = []
-    for s, c in scored:
-        if s >= HIGH_THRESHOLD:
+    for score, c in scored:
+        s_alias = _alias_match_score(query_vi, c)
+        if s_alias >= 0.95 or score >= HIGH_THRESHOLD:
             seeds.append(c)
-        else:
-            if _alias_match_score(query_vi, c) >= 0.95:
-                seeds.append(c)
+
 
     # Small cap to avoid runaway (not a top-K truncation of final results)
     seeds = seeds[:50]
     logger.info(f"[Phase 3] Seeds selected: {len(seeds)} (threshold={HIGH_THRESHOLD})")
     for c in seeds:
         logger.info(f"  - {c['component_key']} :: {c.get('display_name_vi','')}")
+    
+    # DEBUG: Show top 5 candidates even if below threshold
+    if len(seeds) == 0 and scored:
+        logger.info(f"[Phase 3] DEBUG: No seeds above threshold. Top 5 candidates:")
+        for i, (score, c) in enumerate(scored[:5], 1):
+            logger.info(f"  {i}. {c.get('component_key')} :: {c.get('display_name_vi','')} (score={score:.3f})")
+    
     return seeds
 
 # ----------------------------
@@ -292,15 +348,60 @@ def expand_dictionary(client_sb, seeds: List[Dict[str, Any]]) -> Dict[str, Any]:
 # ----------------------------
 # Phase 5: Semantic Inclusion (threshold-based, NOT top-K)
 # ----------------------------
-def include_chunks_for_targets(provider, expansion: Dict[str, Dict[str, Any]], intent_terms: List[str]) -> Dict[str, Any]:
+def _normalize_reference_role(role: Optional[str]) -> str:
+    """Normalize reference role to uppercase, defaulting to 'CORE' if None or empty."""
+    return (role or "CORE").upper()
+
+def _is_section_under_reference(chunk_section: str, referenced_sections: Set[str]) -> bool:
     """
-    Load ALL chunks in referenced docs; include chunks that satisfy ANY rule:
-      - chunk belongs to a referenced section_path
-      - chunk content contains any dictionary alias
-      - embedding similarity >= INCLUSION_THRESHOLD (query/intent vs precomputed chunk vector)
-      - chunk shares the same section_path
-      - chunk is part of a table under the same header (content_type='table')
+    Check if chunk_section is under any referenced section.
+    Returns True if:
+    - chunk_section exactly matches a referenced section_path, OR
+    - chunk_section is a child (starts with ref_section + "/")
+    """
+    if not chunk_section:
+        return False
+    chunk_sec = chunk_section.strip()
+    for ref_sec in referenced_sections:
+        ref_sec = ref_sec.strip()
+        if not ref_sec:
+            continue
+        # Exact match
+        if chunk_sec == ref_sec:
+            return True
+        # Child path (e.g., "a/b" is under "a")
+        if chunk_sec.startswith(ref_sec + "/"):
+            return True
+    return False
+
+def include_chunks_for_targets(
+    provider,
+    expansion: Dict[str, Dict[str, Any]],
+    intent_terms: List[str],
+    context: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Load ALL chunks in referenced docs; include chunks using DEPENDENCY-AWARE tiered logic:
+    
+    Tier 1 (strong inclusion):
+      - chunk.section_path EXACTLY matches a referenced section_path
+    
+    Tier 2 (supported inclusion):
+      - chunk.section_path is a CHILD of a referenced section_path
+      AND (contains_alias OR similarity >= INCLUSION_THRESHOLD)
+    
+    Tier 3 (table spillover):
+      - chunk.content_type == 'table'
+      AND chunk.section_path is already in included_sections (from Tier 1/2)
+    
+    Chunks MUST be anchored to component references. Similarity alone cannot include chunks.
     Returns: component_key -> {component, references:[ {document, section, evidence, chunks:[...] } ] }
+    
+    Args:
+        provider: Embedding provider
+        expansion: Component expansion dictionary from Phase 4
+        intent_terms: Expanded intent terms from Phase 2
+        context: Context dict with 'allowed_reference_roles' set
     """
     provider_obj = QwenProvider()
     emb_func = make_embedding_func(provider_obj)
@@ -330,7 +431,7 @@ def include_chunks_for_targets(provider, expansion: Dict[str, Dict[str, Any]], i
 
             accepted_sections = {s.strip() for s in sec_set if s}
 
-            client_sb = get_supabase_client()
+            client_sb = get_supabase_client(use_service_key=True)  # Use service key to read dictionary
             comp_row = client_sb.table("dictionary_components").select("aliases_vi").eq("component_key", key).limit(1).execute().data
             aliases = (comp_row[0].get("aliases_vi") if comp_row else []) or []
             aliases_lower = [str(a).lower() for a in aliases]
@@ -342,40 +443,72 @@ def include_chunks_for_targets(provider, expansion: Dict[str, Dict[str, Any]], i
             except Exception:
                 pass
 
+            # Track included sections for this (component, doc_id) to support Tier 3
+            included_sections: Set[str] = set()
             included: List[Dict[str, Any]] = []
+            
             for ch in chunks:
                 content = ch.content or ""
 
                 # fetch section_path & content_type for chunk
                 try:
                     meta = client_sb.table("gdd_chunks").select("section_path, content_type").eq("chunk_id", ch.chunk_id).limit(1).execute().data or []
-                    section_path = (meta[0].get("section_path") if meta else "") or ""./
+                    section_path = (meta[0].get("section_path") if meta else "") or "./"
                     content_type = (meta[0].get("content_type") if meta else "") or ""
                 except Exception:
                     section_path = ""
                     content_type = ""
 
-                belongs_section = (section_path.strip() in accepted_sections) if section_path else False
+                section_path_clean = section_path.strip() if section_path else ""
+                
+                # Check if chunk is a child of any referenced section (not exact match)
+                is_child_of_reference = False
+                if section_path_clean and section_path_clean not in accepted_sections:
+                    for ref_sec in accepted_sections:
+                        ref_sec = ref_sec.strip()
+                        if ref_sec and section_path_clean.startswith(ref_sec + "/"):
+                            is_child_of_reference = True
+                            break
+                
+                # Compute secondary filters (only used in Tier 2)
                 contains_alias = any(a in content.lower() for a in aliases_lower) if aliases_lower else False
-                same_section = belongs_section
-                table_under_header = (content_type.lower() == "table" and belongs_section)
-
                 sim_ok = False
                 vec = doc_vectors.get(ch.chunk_id)
                 if vec:
                     sim = _embedding_match_score(q_vec, vec)
                     sim_ok = sim >= INCLUSION_THRESHOLD
-
-                if belongs_section or contains_alias or same_section or table_under_header or sim_ok:
+                
+                # TIERED AND LOGIC (dependency-aware inclusion)
+                should_include = False
+                
+                # Tier 1: Strong inclusion - exact section match
+                if section_path_clean in accepted_sections:
+                    should_include = True
+                
+                # Tier 2: Supported inclusion - child section with alias or similarity
+                elif is_child_of_reference and (contains_alias or sim_ok):
+                    should_include = True
+                
+                # Tier 3: Table spillover - table in already-included section
+                elif content_type.lower() == "table" and section_path_clean in included_sections:
+                    should_include = True
+                
+                if should_include:
                     included.append({
                         "chunk_id": ch.chunk_id,
                         "doc_id": doc_id,
                         "section_path": section_path,
                         "content": content
                     })
+                    # Track this section as included for Tier 3
+                    if section_path_clean:
+                        included_sections.add(section_path_clean)
 
-            # group by section with evidence
-            ref_for_doc = [r for r in refs if r.get("doc_id") == doc_id]
+            # group by section with evidence (no role filtering - accept all)
+            ref_for_doc = [
+                r for r in refs
+                if r.get("doc_id") == doc_id
+            ]
             groups_by_section: Dict[str, Dict[str, Any]] = {}
             for r in ref_for_doc:
                 sec = r.get("section_path", "") or "Unknown"
@@ -401,7 +534,10 @@ def include_chunks_for_targets(provider, expansion: Dict[str, Dict[str, Any]], i
 # ----------------------------
 # Entry point: run all phases
 # ----------------------------
-def dictionary_semantic_retrieval(query_text: str, restrict_doc_id: Optional[str] = None) -> Dict[str, Any]:
+def dictionary_semantic_retrieval(
+    query_text: str,
+    restrict_doc_id: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Full pipeline:
       P1: normalize (to VI)
@@ -410,8 +546,12 @@ def dictionary_semantic_retrieval(query_text: str, restrict_doc_id: Optional[str
       P4: dict expansion (ALL references)
       P5: inclusion (threshold rules, NO top-K)
       P6: grouping (component/document/section)
+    
+    Args:
+        query_text: User query string
+        restrict_doc_id: Optional document ID filter
     """
-    client_sb = get_supabase_client()
+    client_sb = get_supabase_client(use_service_key=True)  # Use service key to read dictionary (RLS may restrict anon)
     provider = QwenProvider()
 
     # Phase 1: Normalize
@@ -424,19 +564,60 @@ def dictionary_semantic_retrieval(query_text: str, restrict_doc_id: Optional[str
     # Phase 3: Seeds (ranking allowed here only)
     seeds = detect_seed_components(client_sb, provider, query_vi, intent_terms)
     if not seeds:
-        # Fallback: return closest candidates (ask user to confirm before expanding)
+        # Fallback: return closest candidates with scores for debugging
         comps = client_sb.table("dictionary_components").select("*").execute().data or []
+        
+        if comps:
+            # Re-compute scores to show what we found
+            emb_func = make_embedding_func(provider)
+            q_vec = emb_func([query_vi])[0]
+            try:
+                q_vec = _normalize_vector(q_vec)
+            except:
+                pass
+            
+            candidates = []
+            for c in comps:
+                comp_vec = _ensure_component_embedding(client_sb, provider, c)
+                try:
+                    comp_vec = _normalize_vector(comp_vec)
+                except:
+                    pass
+                score = _embedding_match_score(q_vec, comp_vec)
+                alias_score = _alias_match_score(query_vi, c)
+                max_score = max(score, alias_score)
+                candidates.append((max_score, c.get("display_name_vi", c.get("component_key", "")), c.get("component_key", "")))
+            
+            candidates.sort(reverse=True)
+            top_5_names = [name for _, name, _ in candidates[:5]]
+            top_5_scores = [f"{name}: {score:.3f}" for score, name, _ in candidates[:5]]
+            
+            logger.warning(f"[Phase 3] No seeds found. Top candidates: {top_5_scores}")
+            
+            return {
+                "status": "no_seeds",
+                "message": f"Không tìm thấy seed đủ mạnh (threshold={HIGH_THRESHOLD}). Top candidates:",
+                "closest_components": top_5_names,
+                "top_scores": top_5_scores,
+                "threshold": HIGH_THRESHOLD
+            }
+        
         return {
             "status": "no_seeds",
-            "message": "Không tìm thấy seed đủ mạnh. Vui lòng xác nhận thành phần gần nhất.",
-            "closest_components": [c.get("display_name_vi", c.get("component_key","")) for c in comps[:10]]
+            "message": "Không tìm thấy seed đủ mạnh. Dictionary có thể trống.",
+            "closest_components": []
         }
 
     # Phase 4: Expansion (deterministic, no ranking)
     expansion = expand_dictionary(client_sb, seeds)
 
-    # Phase 5: Inclusion
-    results = include_chunks_for_targets(provider, expansion, intent_terms)
+    # Phase 5: Inclusion (no mode filtering - accept all reference roles)
+    results = include_chunks_for_targets(
+        provider,
+        expansion,
+        intent_terms,
+        context={"allowed_reference_roles": {"CORE", "UI", "GLOBAL_UI", "META"}}  # Accept all roles
+    )
 
     # Phase 6: Optional doc filter at UX layer (deterministic post-filter; no ranking change)
     if restrict_doc_id:
