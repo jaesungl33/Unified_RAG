@@ -1,4 +1,4 @@
-// Manage Documents functionality - v2.1 (Metadata removed, Icons fixed)
+// Manage Documents functionality - v3.0 (CLEAN - No Metadata, Robust Icons)
 document.addEventListener('DOMContentLoaded', function() {
     // Internal tab navigation
     const tabButtons = document.querySelectorAll('.tab-btn[data-tab]');
@@ -7,8 +7,15 @@ document.addEventListener('DOMContentLoaded', function() {
     tabButtons.forEach(btn => {
         btn.addEventListener('click', function() {
             const targetTab = this.getAttribute('data-tab');
-            tabButtons.forEach(b => b.classList.remove('active'));
+            tabButtons.forEach(b => {
+                b.classList.remove('active');
+                b.setAttribute('data-state', 'inactive');
+                b.setAttribute('aria-selected', 'false');
+            });
             this.classList.add('active');
+            this.setAttribute('data-state', 'active');
+            this.setAttribute('aria-selected', 'true');
+            
             tabContents.forEach(content => {
                 content.classList.remove('active');
                 if (content.id === `tab-${targetTab}`) {
@@ -35,7 +42,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     const getExtensionBadge = (ext) => {
         const colorClass = EXTENSION_COLORS[ext] || "bg-slate-500/10 text-slate-600";
-        return `<div class="badge-ext ${colorClass}" style="width: 36px; text-align: center; font-size: 0.7rem; font-weight: 600;">${ext}</div>`;
+        // Matching the requested style: px-2 py-1 rounded text-xs font-semibold flex-shrink-0
+        return `<div class="badge-ext ${colorClass}" style="padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; flex-shrink: 0; line-height: 1; min-width: 32px; text-align: center;">${ext}</div>`;
     };
 
     // --- GDD Elements ---
@@ -180,7 +188,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             </div>
                         ` : ''}
                         ${isCompleted ? `
-                            <div style="font-size: 0.75rem; color: #16a34a; margin-top: 2px;">${item.chunks || 0} chunks indexed</div>
+                            <div style="font-size: 0.75rem; color: #16a34a; margin-top: 2px;">${item.chunks || 0} chunks</div>
                         ` : ''}
                     </div>
                     ${!isCompleted ? `
@@ -247,15 +255,15 @@ document.addEventListener('DOMContentLoaded', function() {
         gddDocumentsList.innerHTML = filtered.map(doc => `
             <div class="document-item" style="padding: 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;">
                 <div style="display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0;">
-                    <div style="width: 40px; height: 40px; border-radius: 8px; background: #ECFDF5; display: flex; align-items: center; justify-content: center; flex-shrink: 0; overflow: hidden; border: 1px solid #D1FAE5;">
-                        <img src="/static/icons/image-ce143226-1.png" style="width: 100%; height: 100%; object-fit: cover;">
+                    <div style="width: 36px; height: 36px; border-radius: 6px; background: #ECFDF5; display: flex; align-items: center; justify-content: center; flex-shrink: 0; border: 1px solid #D1FAE5;">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-circle-check" style="flex-shrink: 0;"><circle cx="12" cy="12" r="10"></circle><path d="m9 12 2 2 4-4"></path></svg>
                     </div>
                     <div style="flex: 1; min-width: 0;">
                         <div style="font-weight: 600; font-size: 0.875rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--foreground);">
                             ${doc.displayName.replace(/\.pdf$/i, "").replace(/\.txt$/i, "").replace(/\.md$/i, "")}
                         </div>
-                        <div style="font-size: 0.75rem; color: var(--muted-foreground); margin-top: 4px;">
-                            <span>${doc.chunks} chunks indexed</span>
+                        <div style="font-size: 0.75rem; color: var(--muted-foreground); margin-top: 2px;">
+                            ${doc.chunks} chunks
                         </div>
                     </div>
                 </div>
@@ -293,17 +301,19 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         codeDocumentsList.innerHTML = filtered.map(file => {
-            const ext = (file.name || "").split('.').pop();
+            const ext = (file.name || "").split('.').pop().toLowerCase();
             return `
                 <div class="document-item" style="padding: 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;">
                     <div style="display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0;">
-                        ${getExtensionBadge(ext)}
+                        <div style="width: 36px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                            ${getExtensionBadge(ext)}
+                        </div>
                         <div style="flex: 1; min-width: 0;">
                             <div style="font-weight: 600; font-size: 0.875rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--foreground);">
                                 ${file.name}
                             </div>
-                            <div style="font-size: 0.75rem; color: var(--muted-foreground); margin-top: 4px;">
-                                <span>${file.chunks} chunks indexed</span>
+                            <div style="font-size: 0.75rem; color: var(--muted-foreground); margin-top: 2px;">
+                                ${file.chunks} chunks
                             </div>
                         </div>
                     </div>
@@ -333,10 +343,10 @@ document.addEventListener('DOMContentLoaded', function() {
             processingIcon.classList.add('hidden');
         } else {
             const completed = s.queue.filter(f => f.status === 'completed').length;
-            const waiting = s.queue.filter(f => f.status === 'queued').length;
+            const inQueue = s.queue.length - completed;
             
             title.textContent = s.currentProcessing ? "Processing files..." : "Waiting...";
-            subtitle.textContent = `${completed} completed • ${waiting} in queue`;
+            subtitle.textContent = `${completed} completed • ${inQueue} in queue`;
             iconContainer.classList.add('hidden');
             processingIcon.classList.remove('hidden');
         }
@@ -429,7 +439,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 uniqueDocsMap.set(docId, {
                     id: docId,
                     name: rawName,
-                    displayName: rawName.replace(/\.[^/.]+$/, ""), // Strip extension
+                    displayName: rawName, // Keep original for regex in render
                     chunks: doc.chunks_count || doc.chunks || 0
                 });
             });

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Unified RAG App{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lucide-static/font/lucide.css">
     {% block extra_head %}{% endblock %}
 </head>
 <body>
@@ -33,7 +34,7 @@
                 </a>
                 <a href="/manage" class="tab-link {% if request.endpoint == 'manage_documents' %}active{% endif %}" data-tab="manage">
                     <img src="{{ url_for('static', filename='icons/settings.svg') }}" width="18" height="18" style="margin-right: 8px;">
-                    Manage
+                    Manage Documents
                 </a>
             </nav>
         </header>
