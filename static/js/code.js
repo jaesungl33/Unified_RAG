@@ -5,6 +5,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const sendBtn = document.getElementById('send-btn');
     const filesList = document.getElementById('files-list');
     const fileSearch = document.getElementById('file-search');
+    const alphabetNav = document.getElementById('alphabet-nav');
+    const fileCountSpan = document.getElementById('file-count');
     
     let selectedFiles = []; // Track selected files
     let allFilesData = null; // Store all files for filtering
@@ -116,75 +118,103 @@ document.addEventListener('DOMContentLoaded', function() {
             });
     }
     
+    const EXTENSION_COLORS = {
+        ts: 'ext-ts', tsx: 'ext-tsx', js: 'ext-js', jsx: 'ext-jsx',
+        py: 'ext-py', cs: 'ext-cs', cpp: 'ext-cpp', json: 'ext-json',
+        md: 'ext-md', css: 'ext-css', html: 'ext-html'
+    };
+
     function renderFiles(files) {
         filesList.innerHTML = '';
+        if (alphabetNav) alphabetNav.innerHTML = '';
         
         if (!files || files.length === 0) {
-            filesList.innerHTML = '<p style="font-size:0.85rem;color:#666;">No files indexed yet.</p>';
+            filesList.innerHTML = '<p style="font-size:0.75rem;padding:20px;opacity:0.5;">No files indexed yet.</p>';
+            if (fileCountSpan) fileCountSpan.textContent = '(0)';
             return;
         }
         
-        // Get current search term
         const searchTerm = fileSearch.value.toLowerCase().trim();
-        
-        // Filter files based on search term
         const filteredFiles = files.filter(file => {
             if (!searchTerm) return true;
-            const fileName = (file.file_name || file.name || '').toLowerCase();
-            const filePath = (file.file_path || file.path || '').toLowerCase();
-            return fileName.includes(searchTerm) || filePath.includes(searchTerm);
+            const name = (file.file_name || file.name || '').toLowerCase();
+            return name.includes(searchTerm) || (file.file_path || '').toLowerCase().includes(searchTerm);
         });
         
-        if (filteredFiles.length === 0 && searchTerm) {
-            filesList.innerHTML = '<p style="font-size:0.85rem;color:#666;">No files match your search.</p>';
-            return;
-        }
-        
-        // Sort files: selected files first, then unselected files
-        filteredFiles.sort((a, b) => {
-            const aPath = a.file_path || a.path || a.normalized_path || '';
-            const bPath = b.file_path || b.path || b.normalized_path || '';
-            const aSelected = selectedFiles.includes(aPath);
-            const bSelected = selectedFiles.includes(bPath);
-            
-            if (aSelected && !bSelected) return -1; // a comes first
-            if (!aSelected && bSelected) return 1;  // b comes first
-            return 0; // Keep original order for files with same selection status
-        });
-        
-        // Create file list
-        const fileList = document.createElement('ul');
-        fileList.className = 'document-list';
-        
+        if (fileCountSpan) fileCountSpan.textContent = `(${filteredFiles.length})`;
+
+        // Group files by first letter
+        const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+        const grouped = {};
+        const availableLetters = new Set();
+
         filteredFiles.forEach(file => {
-            const fileItem = document.createElement('li');
-            fileItem.className = 'document-item';
-            
-            const fileName = file.file_name || file.name || 'Unknown';
-            const filePath = file.file_path || file.path || file.normalized_path || '';
-            
-            // Check if this file is selected
-            if (selectedFiles.includes(filePath)) {
-                fileItem.classList.add('selected');
-            }
-            
-            // Show just filename, not full path
-            fileItem.innerHTML = `<span class="name">${fileName}</span>`;
-            fileItem.title = filePath; // Show full path on hover
-            
-            fileItem.dataset.filePath = filePath; // Store filePath in dataset for easier access
-            
-            fileItem.addEventListener('click', function() {
-                toggleFileSelection(filePath, fileItem);
-            });
-            
-            fileList.appendChild(fileItem);
+            const name = file.file_name || file.name || 'Unknown';
+            const firstLetter = name[0].toUpperCase();
+            if (!grouped[firstLetter]) grouped[firstLetter] = [];
+            grouped[firstLetter].push(file);
+            availableLetters.add(firstLetter);
         });
-        
-        filesList.appendChild(fileList);
-        
-        // After rendering, update selection UI to ensure consistency
-        updateFileSelectionUI();
+
+        // Render Alphabet Nav
+        alphabet.forEach(letter => {
+            const btn = document.createElement('button');
+            btn.textContent = letter;
+            btn.disabled = !availableLetters.has(letter);
+            btn.addEventListener('click', () => {
+                const target = document.getElementById(`letter-${letter}`);
+                if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
+            alphabetNav.appendChild(btn);
+        });
+
+        // Render Groups
+        alphabet.filter(l => grouped[l]).forEach(letter => {
+            const groupDiv = document.createElement('div');
+            groupDiv.className = 'document-group';
+            groupDiv.id = `letter-${letter}`;
+
+            const heading = document.createElement('div');
+            heading.className = 'document-group-title';
+            heading.innerHTML = `
+                <div style="display:flex; align-items:center; gap:6px;">
+                    <img src="/static/icons/chevron-down.svg" class="chevron" width="12">
+                    <span>${letter}</span>
+                </div>
+                <span class="group-count">(${grouped[letter].length})</span>
+            `;
+            heading.addEventListener('click', () => groupDiv.classList.toggle('collapsed'));
+            groupDiv.appendChild(heading);
+
+            const list = document.createElement('ul');
+            list.className = 'document-list';
+
+            grouped[letter].sort((a, b) => (a.file_name || a.name).localeCompare(b.file_name || b.name)).forEach(file => {
+                const path = file.file_path || file.path || '';
+                const name = file.file_name || file.name || 'Unknown';
+                const ext = name.split('.').pop().toLowerCase();
+                const badgeClass = EXTENSION_COLORS[ext] || 'ext-default';
+
+                const item = document.createElement('li');
+                item.className = 'document-item';
+                if (selectedFiles.includes(path)) item.classList.add('selected');
+                
+                item.innerHTML = `
+                    <div style="display:flex; flex-direction:column; min-width:0; flex:1;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span class="ext-badge ${badgeClass}">.${ext}</span>
+                            <span class="name">${name}</span>
+                        </div>
+                        <div class="file-path">${path}</div>
+                    </div>
+                `;
+                item.addEventListener('click', () => toggleFileSelection(path, item));
+                list.appendChild(item);
+            });
+
+            groupDiv.appendChild(list);
+            filesList.appendChild(groupDiv);
+        });
     }
     
     function filterFiles(searchTerm) {

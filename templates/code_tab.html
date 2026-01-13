@@ -3,35 +3,76 @@
 {% block title %}Code Q&A - Unified RAG App{% endblock %}
 
 {% block content %}
-<div class="code-container">
+<div class="code-container" style="height: 100%;">
     <div class="layout">
+        <!-- Sidebar -->
         <div class="sidebar">
-            <h2>Indexed Files</h2>
-            <input type="text" id="file-search" class="document-search" placeholder="Search files...">
-            <p style="font-size:0.8rem;margin:4px 0 8px 0;">
-                Click a file to filter queries to that file.
-            </p>
-            <div id="files-list">
-                <p>Loading files...</p>
+            <h2>
+                <img src="{{ url_for('static', filename='icons/code.svg') }}" width="14" height="14">
+                Codebase Files
+            </h2>
+            <!-- Manage Documents Navigation -->
+            <div style="padding: 0 0 16px; border-bottom: 1px solid var(--border); margin-bottom: 16px;">
+                <a href="/manage" class="btn-secondary w-full" style="display: flex; height: 36px; font-size: 0.8125rem; gap: 8px; justify-content: center; align-items: center; text-decoration: none;">
+                    <img src="{{ url_for('static', filename='icons/upload.svg') }}" width="14" height="14" style="opacity: 0.7;">
+                    Manage Documents
+                </a>
+            </div>
+
+            <div style="position: relative; padding: 0 12px 12px;">
+                <h3 style="font-size: 0.8125rem; font-weight: 600; display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                    <img src="{{ url_for('static', filename='icons/code.svg') }}" width="16" height="16">
+                    Code Files <span id="file-count" style="color: var(--muted-foreground); font-weight: 400; font-size: 0.75rem;"></span>
+                </h3>
+                <input type="text" id="file-search" class="document-search" placeholder="Search files...">
+            </div>
+
+            <!-- Alphabet Quick Navigation -->
+            <div class="alphabet-nav" id="alphabet-nav">
+                <!-- Dynamically populated -->
+            </div>
+            
+            <div class="document-list-container" style="padding-top: 8px;">
+                <div id="files-list">
+                    <div class="placeholder-text" style="font-size: 0.75rem; padding: 20px;">Loading files...</div>
+                </div>
+            </div>
+            
+            <div class="border-t border-border mt-4 pt-4">
+                <p style="font-size: 0.75rem; color: var(--text-muted); line-height: 1.4;">
+                    <strong>Tip:</strong> Click multiple files to search across them. Use <code style="background: #E2E8F0; padding: 1px 3px; border-radius: 2px;">@filename</code> to filter.
+                </p>
             </div>
         </div>
         
+        <!-- Chat Panel -->
         <div class="main-panel">
             <div class="chat-container" id="chat-container">
                 <div class="message bot-message" id="code-welcome-message">
-                    Welcome! Ask questions about your C# codebase. Use @filename.cs to filter to specific files.
+                    <div style="display: flex; flex-direction: column; align-items: center; text-align: center; padding: 40px 0;">
+                        <div class="icon-box" style="width: 48px; height: 48px; background: #ECFDF5; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 16px;">
+                            <img src="{{ url_for('static', filename='icons/code.svg') }}" width="24" height="24" style="filter: invert(53%) sepia(93%) saturate(415%) hue-rotate(113deg) brightness(96%) contrast(92%);">
+                        </div>
+                        <h3 style="margin-bottom: 8px;">Code RAG Assistant</h3>
+                        <p style="color: var(--text-muted); max-width: 400px;">Ask questions about your codebase. Get explanations of logic, find implementations, or analyze dependencies.</p>
+                    </div>
                 </div>
             </div>
+            
+            <!-- Chat Input -->
+            <div class="input-area">
+                <button id="clear-chat-btn" class="btn-secondary" title="Clear Chat">
+                    <img src="{{ url_for('static', filename='icons/trash.svg') }}" width="18" height="18">
+                </button>
+                <input type="text" id="query-input" placeholder="Ask a question about the codebase...">
+                <button id="send-btn" class="btn-primary">
+                    <span>Send</span>
+                    <img src="{{ url_for('static', filename='icons/send.svg') }}" width="18" height="18" style="filter: brightness(0) invert(1);">
+                </button>
+            </div>
         </div>
-    </div>
-    
-    <div class="input-area">
-        <input type="text" id="query-input" placeholder="Ask a question about the codebase...">
-        <button id="send-btn" class="btn-primary">Send</button>
-        <button id="clear-chat-btn" class="btn-secondary">Clear Chat</button>
     </div>
 </div>
 
 <script src="{{ url_for('static', filename='js/code.js') }}"></script>
 {% endblock %}
-

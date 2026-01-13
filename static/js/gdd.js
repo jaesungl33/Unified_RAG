@@ -8,6 +8,12 @@ document.addEventListener('DOMContentLoaded', function() {
     const uploadStatus = document.getElementById('upload-status');
     const documentsList = document.getElementById('documents-list');
     const documentSearch = document.getElementById('document-search');
+    const toggleSidebarBtn = document.getElementById('toggle-sidebar');
+    const sidebar = document.getElementById('gdd-sidebar');
+    const previewPanel = document.getElementById('preview-panel');
+    const closePreviewBtn = document.getElementById('close-preview');
+    const dropzone = document.getElementById('gdd-dropzone');
+    const selectedDocHint = document.getElementById('selected-doc-hint');
     
     let selectedDocument = null; // Track selected document
     let selectedDocId = null; // Track selected document ID
@@ -32,6 +38,49 @@ document.addEventListener('DOMContentLoaded', function() {
     loadDocuments();
     // Restore chat history
     loadChatHistory();
+    
+    // Sidebar toggle
+    if (toggleSidebarBtn) {
+        toggleSidebarBtn.addEventListener('click', () => {
+            sidebar.classList.toggle('collapsed');
+        });
+    }
+
+    // Close preview
+    if (closePreviewBtn) {
+        closePreviewBtn.addEventListener('click', () => {
+            previewPanel.classList.remove('open');
+        });
+    }
+
+    // Drag & Drop
+    if (dropzone) {
+        dropzone.addEventListener('click', () => fileUpload.click());
+        dropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropzone.style.borderColor = 'var(--primary)';
+            dropzone.style.background = 'var(--muted)';
+        });
+        dropzone.addEventListener('dragleave', () => {
+            dropzone.style.borderColor = 'var(--border)';
+            dropzone.style.background = 'transparent';
+        });
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.style.borderColor = 'var(--border)';
+            dropzone.style.background = 'transparent';
+            if (e.dataTransfer.files.length) {
+                fileUpload.files = e.dataTransfer.files;
+                uploadFile();
+            }
+        });
+    }
+
+    // Textarea auto-height
+    queryInput.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = (this.scrollHeight) + 'px';
+    });
     
     // Search functionality
     documentSearch.addEventListener('input', function() {
@@ -377,9 +426,21 @@ document.addEventListener('DOMContentLoaded', function() {
             const groupWrapper = document.createElement('div');
             groupWrapper.className = 'document-group';
             
+            const docsInGroup = groups[groupKey];
+            
             const heading = document.createElement('div');
             heading.className = 'document-group-title';
-            heading.textContent = groupKey;
+            heading.innerHTML = `
+                <img src="/static/icons/chevron-down.svg" class="chevron">
+                <span>${groupKey}</span>
+                <span class="group-count">(${docsInGroup.length})</span>
+            `;
+            
+            // Handle collapsing
+            heading.addEventListener('click', function() {
+                groupWrapper.classList.toggle('collapsed');
+            });
+            
             groupWrapper.appendChild(heading);
             
             const docList = document.createElement('ul');
@@ -394,23 +455,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 const docItem = document.createElement('li');
                 docItem.className = 'document-item';
                 
-                // Find the best matching option value - prefer exact doc_id match
                 let optionValue = null;
                 if (data.options) {
-                    // First try exact doc_id match
-                    optionValue = data.options.find(opt => {
-                        const matchPattern = `(${doc.doc_id})`;
-                        return opt.includes(matchPattern) || opt.endsWith(`(${doc.doc_id})`);
-                    });
-                    // Fallback to name match
-                    if (!optionValue) {
-                        optionValue = data.options.find(opt => 
-                            opt.includes(rawName) || opt.includes(doc.doc_id)
-                        );
-                    }
-                }
-                // Final fallback
-                if (!optionValue) {
+                    optionValue = data.options.find(opt => opt.includes(`(${doc.doc_id})`)) || `${rawName} (${doc.doc_id})`;
+                } else {
                     optionValue = `${rawName} (${doc.doc_id})`;
                 }
                 
@@ -418,12 +466,46 @@ document.addEventListener('DOMContentLoaded', function() {
                     docItem.classList.add('selected');
                 }
                 
-                docItem.innerHTML = `<span class="name">${displayName}</span>`;
-                docItem.dataset.docValue = optionValue; // Store optionValue for easier access
-                docItem.dataset.docId = doc.doc_id; // Store actual doc_id for direct access
-                docItem.title = optionValue; // Store in title for easier access
+                const isPdf = rawName.toLowerCase().endsWith('.pdf');
+                const isMd = rawName.toLowerCase().endsWith('.md') || rawName.toLowerCase().endsWith('.txt');
+                const iconSrc = isPdf ? '/static/icons/file-pdf.svg' : (isMd ? '/static/icons/file-md.svg' : '/static/icons/file.svg');
+                const iconColor = isPdf ? '#EF4444' : (isMd ? '#3B82F6' : '#6B7280');
+
+                docItem.innerHTML = `
+                    <img src="${iconSrc}" class="file-icon" width="16" height="16" style="filter: drop-shadow(0 0 0 ${iconColor})">
+                    <div class="content-wrapper">
+                        <span class="name">${displayName}</span>
+                        <span class="meta-text">${(doc.chunks_count || 0)} chunks</span>
+                    </div>
+                    <div class="actions">
+                        <button class="action-btn preview-trigger" title="Preview">
+                            <img src="/static/icons/eye.svg" width="14" height="14">
+                        </button>
+                        <button class="action-btn delete-trigger" title="Delete">
+                            <img src="/static/icons/close.svg" width="14" height="14">
+                        </button>
+                    </div>
+                `;
                 
-                docItem.addEventListener('click', function() {
+                docItem.dataset.docValue = optionValue;
+                docItem.dataset.docId = doc.doc_id;
+                
+                docItem.addEventListener('click', (e) => {
+                    if (e.target.closest('.preview-trigger')) {
+                        openPreview(doc);
+                        return;
+                    }
+                    if (e.target.closest('.delete-trigger')) {
+                        // Global delete handler from manage.js would be ideal but we need to keep it local if not available
+                        if (confirm('Delete this document?')) {
+                            fetch('/api/manage/delete/gdd', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({ doc_id: doc.doc_id })
+                            }).then(() => loadDocuments());
+                        }
+                        return;
+                    }
                     selectDocument(optionValue, docItem);
                 });
                 
@@ -509,27 +591,51 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!allDocumentsData) return;
         
         isUpdatingFromSelection = true;
-        
-        // Get current input value
         const currentValue = queryInput.value;
-        
-        // Extract the query part (everything that's not @documentname)
         const queryParts = currentValue.split(/\s+/);
         const queryText = queryParts.filter(part => !part.startsWith('@')).join(' ');
         
-        // Build new input value with @documentname pattern
         if (selectedDocument && selectedDocument !== 'All Documents') {
-            // Extract document name from option value
-            const docName = selectedDocument.split(' (')[0]; // Remove (doc_id) part
+            const docName = selectedDocument.split(' (')[0];
             const cleanDocName = docName.replace(/[()]/g, '').trim();
-            const newValue = `@${cleanDocName} ${queryText}`.trim(); // Space after @documentname
-            queryInput.value = newValue;
+            queryInput.value = `@${cleanDocName} ${queryText}`.trim();
+            if (selectedDocHint) selectedDocHint.textContent = `Targeting: ${docName}`;
         } else {
-            // No document selected, just keep query text
             queryInput.value = queryText;
+            if (selectedDocHint) selectedDocHint.textContent = '';
         }
         
         isUpdatingFromSelection = false;
+    }
+
+    function openPreview(doc) {
+        if (!previewPanel) return;
+        
+        const filename = document.getElementById('preview-filename');
+        const chunks = document.getElementById('meta-chunks');
+        const content = document.getElementById('preview-content');
+        
+        filename.textContent = doc.name || doc.doc_id;
+        chunks.textContent = doc.chunks_count || '0';
+        content.innerHTML = '<p style="opacity: 0.5;">Loading preview content...</p>';
+        
+        previewPanel.classList.add('open');
+        
+        // Fetch real sections as preview content
+        fetch(`/api/gdd/sections?doc_id=${encodeURIComponent(doc.doc_id)}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.sections && data.sections.length > 0) {
+                    content.innerHTML = data.sections.map(s => 
+                        `<div style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border);">
+                            <div style="font-weight: 600; margin-bottom: 4px;">${s.section_name || 'Section'}</div>
+                            <div style="opacity: 0.8; font-size: 0.7rem;">Path: ${s.section_path || '/'}</div>
+                        </div>`
+                    ).join('');
+                } else {
+                    content.textContent = 'No preview content available for this document.';
+                }
+            });
     }
     
     function syncSelectionFromInput() {
@@ -638,6 +744,18 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     function addMessage(text, type, fromHistory) {
+        // Hide welcome message on first activity
+        const welcome = document.getElementById('gdd-welcome-message');
+        if (welcome) welcome.style.display = 'none';
+
+        const wrapper = document.createElement('div');
+        wrapper.className = `message-wrapper ${type}`;
+        
+        const avatar = document.createElement('div');
+        avatar.className = 'avatar';
+        const iconPath = type === 'bot' ? '/static/icons/bot.svg' : '/static/icons/user.svg';
+        avatar.innerHTML = `<img src="${iconPath}" width="18" height="18" style="${type === 'bot' ? 'filter: brightness(0) invert(1)' : ''}">`;
+        
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${type}-message`;
         
@@ -645,7 +763,10 @@ document.addEventListener('DOMContentLoaded', function() {
         const formattedText = formatMessage(text);
         messageDiv.innerHTML = formattedText;
         
-        chatContainer.appendChild(messageDiv);
+        wrapper.appendChild(avatar);
+        wrapper.appendChild(messageDiv);
+        
+        chatContainer.appendChild(wrapper);
         chatContainer.scrollTop = chatContainer.scrollHeight;
 
         // Persist to localStorage unless loading from history

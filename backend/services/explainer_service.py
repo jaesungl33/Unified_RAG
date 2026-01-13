@@ -276,6 +276,11 @@ OUTPUT STYLE:
 - Do NOT add summaries that introduce new interpretations.
 - Prefer precise restatement over explanation.
 
+HIGHLIGHTING INSTRUCTIONS:
+- When a word or phrase is a keypoint that needs to be highlighted (important keywords, headings, or key concepts), wrap it with asterisks: *word* or *key phrase*
+- Use this syntax for important terms, section names, or concepts that should stand out
+- Example: "The *damage* system calculates *critical hits* based on *weapon type*"
+
 Chunks:
 {chunk_texts_enhanced}
 """
@@ -312,5 +317,6 @@ Chunks:
             'language': 'english',
             'error': f'Error generating explanation: {str(e)}'
         }
+
 
 

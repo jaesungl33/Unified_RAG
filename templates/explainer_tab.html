@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block title %}Keyword Finder - Unified RAG App{% endblock %}
+
+{% block content %}
+<div class="explainer-container flex flex-col h-full" id="tab-explainer">
+    <!-- Fixed Top Header -->
+    <div class="explainer-fixed-header">
+        <div style="flex: 1; display: flex; align-items: center; gap: 12px;">
+            <div class="keyword-input-wrapper" style="width: 400px; gap: 0;">
+                <input type="text" id="explainer-keyword" placeholder="Enter topic or keyword..." class="keyword-input" style="border-radius: var(--radius-md) 0 0 var(--radius-md); height: 40px;">
+                <button id="explainer-search-btn" class="search-icon-btn" style="border-radius: 0 var(--radius-md) var(--radius-md) 0; height: 40px; width: 48px;">
+                    <img src="{{ url_for('static', filename='icons/search.svg') }}" width="18" height="18" style="filter: brightness(0) invert(1);">
+                </button>
+            </div>
+            <div id="results-count" style="font-size: 0.75rem; color: var(--muted-foreground); margin-left: 8px;"></div>
+        </div>
+        
+        <button id="explain-btn" class="btn-primary" style="height: 40px; padding: 0 20px;" disabled>
+            <img src="{{ url_for('static', filename='icons/refresh.svg') }}" width="18" height="18" style="filter: brightness(0) invert(1); margin-right: 8px;">
+            Generate Explanation ✨
+        </button>
+    </div>
+
+    <div class="explainer-layout flex-1 overflow-hidden">
+        <!-- Left Selection Panel (Sidebar) -->
+        <div class="explainer-left">
+            <div id="explainer-results-container" style="display: flex; flex-direction: column; height: 100%;">
+                <div class="collapsible-header" id="selection-header" style="height: 40px; flex-shrink: 0;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 0.7rem; font-weight: 800; text-transform: uppercase; color: var(--muted-foreground);">Search Results</span>
+                        <span style="font-size: 0.7rem; font-weight: 800; text-transform: uppercase; color: var(--muted-foreground);">(<span id="results-count-number">0</span>)</span>
+                        <div id="selected-count-badge" style="background: var(--primary); color: white; border-radius: 99px; padding: 1px 6px; font-size: 10px; font-weight: 700;">0</div>
+                    </div>
+                    <img src="{{ url_for('static', filename='icons/chevron-down.svg') }}" width="14" height="14" class="chevron-toggle">
+                </div>
+                
+                <div class="collapsible-content" id="selection-content">
+                    <div class="select-all-none" style="padding: 8px 16px; margin: 0; background: #fafafa; border-bottom: 1px solid var(--border); flex-shrink: 0;">
+                        <label class="select-option">
+                            <input type="checkbox" id="select-all-checkbox">
+                            <span style="font-size: 0.7rem; font-weight: 600;">All</span>
+                        </label>
+                        <label class="select-option">
+                            <input type="checkbox" id="select-none-checkbox">
+                            <span style="font-size: 0.7rem; font-weight: 600;">None</span>
+                        </label>
+                    </div>
+                    <div id="explainer-results-checkboxes" class="document-list scroll-area"></div>
+                </div>
+            </div>
+            
+            <div id="explainer-empty-left" class="flex-1 flex flex-col items-center justify-center p-8 text-center opacity-30" style="display: none;">
+            </div>
+        </div>
+        
+        <!-- Right Output -->
+        <div class="explainer-right">
+            <div class="explainer-bubble explanation-bubble flex flex-col">
+                <div style="padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: rgba(59, 130, 246, 0.03);">
+                    <h3 class="bubble-title" style="margin: 0; display: flex; align-items: center; gap: 8px;">
+                        <img src="{{ url_for('static', filename='icons/success.svg') }}" width="16" height="16" style="filter: invert(41%) sepia(85%) saturate(3015%) hue-rotate(222deg) brightness(101%) contrast(89%);">
+                        Generated Explanation ✨
+                    </h3>
+                    <div id="gen-status" style="font-size: 0.75rem; font-weight: 600;"></div>
+                </div>
+                <div id="explanation-output" class="explanation-content scroll-area flex-1" style="display: flex; align-items: center; justify-content: center;">
+                    <p class="placeholder-text" style="text-align: center; color: var(--muted-foreground); font-size: 0.875rem;">Search for a keyword and select documents to generate an explanation.</p>
+                </div>
+            </div>
+            
+            <div class="explainer-bottom-row">
+                <div class="explainer-bubble source-chunks-bubble flex flex-col">
+                    <h3 class="bubble-title" style="padding: 12px 16px; border-bottom: 1px solid var(--border); margin: 0; display: flex; justify-content: space-between; font-size: 0.75rem;">
+                        Source Chunks
+                        <span id="chunks-count-label" style="font-weight: 400; opacity: 0.6;"></span>
+                    </h3>
+                    <div id="source-chunks-output" class="bubble-scroll-content scroll-area flex-1">
+                        <p class="placeholder-text">No source material.</p>
+                    </div>
+                </div>
+                
+                <div class="explainer-bubble metadata-bubble flex flex-col">
+                    <h3 class="bubble-title" style="padding: 12px 16px; border-bottom: 1px solid var(--border); margin: 0; font-size: 0.75rem;">Metadata</h3>
+                    <div id="metadata-output" class="bubble-scroll-content scroll-area flex-1">
+                        <p class="placeholder-text">No metadata.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/explainer.js') }}"></script>
+{% endblock %}

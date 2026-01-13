@@ -1,37 +1,57 @@
 {% extends "base.html" %}
 
-{% block title %}Home - Unified RAG App{% endblock %}
+{% block title %}Unified RAG Assistant{% endblock %}
 
 {% block content %}
 <div class="home-container">
     <div class="welcome-section">
-        <h2>Welcome to Unified RAG Application</h2>
-        <p>This application combines two powerful RAG systems:</p>
-        
-        <div class="feature-cards">
-            <div class="feature-card">
-                <h3>📄 GDD RAG</h3>
-                <p>Query Game Design Documents using RAG technology</p>
-                <ul>
-                    <li>Upload and index PDF documents</li>
-                    <li>Ask questions about game design</li>
-                    <li>Retrieve relevant document sections</li>
-                </ul>
-                <a href="/gdd" class="btn-primary">Go to GDD RAG</a>
-            </div>
-            
-            <div class="feature-card">
-                <h3>💻 Code Q&A</h3>
-                <p>Query your C# codebase using semantic search</p>
-                <ul>
-                    <li>Search across indexed code files</li>
-                    <li>Ask questions about code structure</li>
-                    <li>Get answers based on actual code</li>
-                </ul>
-                <a href="/code" class="btn-primary">Go to Code Q&A</a>
-            </div>
+        <div class="icon-box">
+            <img src="{{ url_for('static', filename='icons/library.svg') }}" width="32" height="32" style="filter: invert(41%) sepia(85%) saturate(3015%) hue-rotate(222deg) brightness(101%) contrast(89%);">
         </div>
+        <h2>Unified RAG Assistant</h2>
+        <p>Your intelligent document and code assistant. Choose a feature to get started.</p>
     </div>
+    
+    <div class="feature-cards">
+        <a href="/gdd" class="feature-card">
+            <div class="icon-wrapper" style="background: #E0E7FF;">
+                <img src="{{ url_for('static', filename='icons/chat.svg') }}" width="24" height="24" style="filter: invert(41%) sepia(85%) saturate(3015%) hue-rotate(222deg) brightness(101%) contrast(89%);">
+            </div>
+            <h3>GDD RAG</h3>
+            <p>Chat with your Game Design Documents. Upload PDFs, markdown, and text files to get intelligent answers about your game's systems and assets.</p>
+            <div class="metadata">
+                <img src="{{ url_for('static', filename='icons/file.svg') }}" width="14" height="14">
+                {{ gdd_count }} documents indexed
+            </div>
+        </a>
+        
+        <a href="/code" class="feature-card">
+            <div class="icon-wrapper" style="background: #ECFDF5;">
+                <img src="{{ url_for('static', filename='icons/code.svg') }}" width="24" height="24" style="filter: invert(53%) sepia(93%) saturate(415%) hue-rotate(113deg) brightness(96%) contrast(92%);">
+            </div>
+            <h3>Code RAG</h3>
+            <p>Query your codebase intelligently. Search through source files, find implementations, and get contextual explanations of your logic.</p>
+            <div class="metadata">
+                <img src="{{ url_for('static', filename='icons/file.svg') }}" width="14" height="14">
+                {{ code_count }} files indexed
+            </div>
+        </a>
+        
+        <a href="/explainer" class="feature-card">
+            <div class="icon-wrapper" style="background: #FAF5FF;">
+                <img src="{{ url_for('static', filename='icons/library.svg') }}" width="24" height="24" style="filter: invert(54%) sepia(91%) saturate(3660%) hue-rotate(251deg) brightness(96%) contrast(105%);">
+            </div>
+            <h3>Keyword Finder</h3>
+            <p>Search for specific keywords across your documents and get detailed, structured explanations with contextual exploration.</p>
+            <div class="metadata">
+                <img src="{{ url_for('static', filename='icons/refresh.svg') }}" width="14" height="14">
+                Keyword-based exploration
+            </div>
+        </a>
+    </div>
+    
+    <p style="margin-top: 48px; color: var(--text-muted); font-size: 0.875rem;">
+        Tip: Use <code style="background: #F1F5F9; padding: 2px 6px; border-radius: 4px;">@documentname</code> in chat to reference specific documents
+    </p>
 </div>
 {% endblock %}
-

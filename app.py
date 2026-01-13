@@ -219,8 +219,35 @@ app.logger.info("=" * 60)
 
 @app.route('/')
 def index():
-    """Main page with tabs for GDD RAG and Code Q&A"""
-    return render_template('index.html')
+    """Main page with dynamic counts for documents and code files"""
+    gdd_count = 0
+    code_count = 0
+    
+    # Get GDD document count
+    try:
+        if gdd_service_available:
+            gdd_docs = list_documents()
+            gdd_count = len(gdd_docs) if gdd_docs else 0
+        
+        # Also include keyword documents
+        try:
+            from backend.storage.keyword_storage import list_keyword_documents
+            keyword_docs = list_keyword_documents()
+            gdd_count += len(keyword_docs) if keyword_docs else 0
+        except:
+            pass
+    except Exception as e:
+        app.logger.warning(f"Error counting GDD documents: {e}")
+
+    # Get Code file count
+    try:
+        if code_service_available:
+            code_files = list_indexed_files()
+            code_count = len(code_files) if code_files else 0
+    except Exception as e:
+        app.logger.warning(f"Error counting Code files: {e}")
+        
+    return render_template('index.html', gdd_count=gdd_count, code_count=code_count)
 
 @app.route('/gdd')
 def gdd_tab():
@@ -231,6 +258,16 @@ def gdd_tab():
 def code_tab():
     """Code Q&A tab"""
     return render_template('code_tab.html')
+
+@app.route('/explainer')
+def explainer_tab():
+    """Keyword Finder page"""
+    return render_template('explainer_tab.html')
+
+@app.route('/manage')
+def manage_documents():
+    """Manage Documents page"""
+    return render_template('manage_documents.html')
 
 @app.route('/api/gdd/query', methods=['POST'])
 def gdd_query():
