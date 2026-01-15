@@ -42,21 +42,39 @@ class SimpleLLMProvider:
                 "API key required. Set OPENAI_API_KEY environment variable"
             )
         
-        # Determine base URL - use OpenAI endpoint
+        # Determine base URL - explicitly use OpenAI endpoint
+        # IMPORTANT: OpenAI client automatically reads OPENAI_BASE_URL from env,
+        # so we must explicitly override it to ensure we use OpenAI, not DashScope
         if base_url:
             self.base_url = base_url
-        # COMMENTED OUT: Qwen/DashScope endpoint
-        # elif os.getenv('QWEN_API_KEY') or os.getenv('DASHSCOPE_API_KEY'):
-        #     # DashScope international endpoint
-        #     self.base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
         else:
-            # Default OpenAI endpoint
-            self.base_url = None
+            # Check if OPENAI_BASE_URL is set in environment
+            env_base_url = os.getenv('OPENAI_BASE_URL')
+            
+            # If OPENAI_BASE_URL points to DashScope/Qwen, explicitly use OpenAI endpoint
+            if env_base_url and 'dashscope' in env_base_url.lower():
+                # Force OpenAI endpoint - override DashScope setting
+                self.base_url = "https://api.openai.com/v1"
+            # If OPENAI_BASE_URL is set to OpenAI endpoint, use it
+            elif env_base_url and 'openai' in env_base_url.lower():
+                self.base_url = env_base_url
+            else:
+                # No OPENAI_BASE_URL or it's not set - use OpenAI default
+                self.base_url = "https://api.openai.com/v1"  # Explicitly set OpenAI endpoint
         
         # Model selection - use OpenAI model
         # COMMENTED OUT: Qwen model default
         # self.model = model or os.getenv('LLM_MODEL', 'qwen-plus')
         self.model = model or os.getenv('LLM_MODEL', 'gpt-4o-mini')
+        
+        # Log configuration for debugging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[LLM Provider] Initializing with:")
+        logger.info(f"  - API Key starts with: {self.api_key[:10]}..." if self.api_key else "  - API Key: None")
+        logger.info(f"  - Base URL: {self.base_url or 'None (using OpenAI default)'}")
+        logger.info(f"  - Model: {self.model}")
+        logger.info(f"  - OPENAI_BASE_URL env: {os.getenv('OPENAI_BASE_URL', 'Not set')}")
         
         # Initialize client
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
