@@ -530,16 +530,24 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     function selectDocument(docValue, element) {
+        // Ensure only one document can be selected at a time
+        // First, clear any previous selection
+        const previousSelected = selectedDocument;
+        selectedDocument = null;
+        selectedDocId = null;
+        
         // Remove selected class from all items
         document.querySelectorAll('.document-item').forEach(item => {
             item.classList.remove('selected');
         });
         
-        // Add selected class to clicked item
-        element.classList.add('selected');
-        
-        // Update selected document
+        // Update selected document (only one can be selected)
         selectedDocument = docValue === 'All Documents' ? null : docValue;
+        
+        // Add selected class to clicked item (only this one)
+        if (element) {
+            element.classList.add('selected');
+        }
         
         // Extract doc_id from selected document
         if (selectedDocument && selectedDocument !== 'All Documents') {
@@ -651,12 +659,28 @@ document.addEventListener('DOMContentLoaded', function() {
             // No @pattern found, deselect if something was selected
             if (selectedDocument && selectedDocument !== 'All Documents') {
                 selectedDocument = null;
+                selectedDocId = null;
+                documentSections = [];
+                hideSectionDropdown();
                 updateDocumentSelectionUI();
             }
             return;
         }
         
         const docNameFromInput = atPattern[1];
+        
+        // Early exit: If we already have this document selected and it matches the input, don't re-process
+        if (selectedDocument) {
+            const currentDocName = selectedDocument.split(' (')[0];
+            const normalizedCurrent = currentDocName.toLowerCase().replace(/[()[\]_,-\s]/g, '');
+            const normalizedInput = docNameFromInput.toLowerCase().replace(/[()[\]_,-\s]/g, '');
+            // If current selection matches input, don't re-process
+            if (normalizedCurrent === normalizedInput || 
+                normalizedCurrent.includes(normalizedInput) ||
+                normalizedInput.includes(normalizedCurrent)) {
+                return; // Already selected and matches - no need to re-process
+            }
+        }
         
         // Find matching document
         let matchedDoc = null;
@@ -672,8 +696,9 @@ document.addEventListener('DOMContentLoaded', function() {
         
         const normalizedInput = normalizeForMatch(docNameFromInput);
         
-        // Check all documents
-        allDocumentsData.documents.forEach(doc => {
+        // Check all documents - use for...of with break to stop after first match
+        // Priority: Exact matches first, then partial matches
+        for (const doc of allDocumentsData.documents) {
             const rawName = doc.name || doc.doc_id || 'Unknown';
             const displayName = parseDocumentName(rawName).displayTitle;
             const optionValue = allDocumentsData.options ? 
@@ -685,23 +710,47 @@ document.addEventListener('DOMContentLoaded', function() {
             const normalizedRawName = normalizeForMatch(rawName);
             const normalizedDisplayName = normalizeForMatch(displayName);
             
-            // Try to match by:
-            // 1. Exact doc_id match (normalized)
-            // 2. Display name match (normalized)
-            // 3. Raw name match (normalized)
-            // 4. Partial match in doc_id
+            // Try to match by EXACT matches first (more specific, less likely to match multiple)
             if (normalizedDocId === normalizedInput ||
                 normalizedDisplayName === normalizedInput ||
-                normalizedRawName === normalizedInput ||
-                normalizedDocId.includes(normalizedInput) ||
-                normalizedInput.includes(normalizedDocId)) {
+                normalizedRawName === normalizedInput) {
                 matchedDoc = doc;
                 matchedOptionValue = optionValue;
+                break; // Stop after first exact match
             }
-        });
+        }
+        
+        // If no exact match found, try partial matches (but only if we don't already have a selection)
+        if (!matchedDoc && !selectedDocument) {
+            for (const doc of allDocumentsData.documents) {
+                const rawName = doc.name || doc.doc_id || 'Unknown';
+                const optionValue = allDocumentsData.options ? 
+                    allDocumentsData.options.find(opt => opt.includes(rawName) || opt.includes(doc.doc_id)) : 
+                    `${rawName} (${doc.doc_id})`;
+                
+                const normalizedDocId = normalizeForMatch(doc.doc_id);
+                const normalizedRawName = normalizeForMatch(rawName);
+                
+                // Partial match (less specific - only use if no exact match)
+                if (normalizedDocId.includes(normalizedInput) ||
+                    normalizedInput.includes(normalizedDocId) ||
+                    normalizedRawName.includes(normalizedInput)) {
+                    matchedDoc = doc;
+                    matchedOptionValue = optionValue;
+                    break; // Stop after first partial match
+                }
+            }
+        }
         
         // Update selectedDocument if match found
+        // IMPORTANT: Only allow one document to be selected at a time
         if (matchedOptionValue && selectedDocument !== matchedOptionValue) {
+            // Clear previous selection first
+            const previousSelected = selectedDocument;
+            selectedDocument = null;
+            selectedDocId = null;
+            
+            // Set new selection (only one document)
             selectedDocument = matchedOptionValue;
             // Use the actual doc_id from the matched document (most reliable)
             selectedDocId = matchedDoc ? matchedDoc.doc_id : null;
@@ -716,10 +765,11 @@ document.addEventListener('DOMContentLoaded', function() {
             if (selectedDocId) {
                 loadDocumentSections(selectedDocId);
             }
-            // Re-render to move selected document to top
-            renderDocuments(allDocumentsData);
+            // Only update UI, don't re-render all documents (that causes the issue)
+            // This ensures only one document is visually selected
+            updateDocumentSelectionUI();
         } else if (!matchedOptionValue && selectedDocument) {
-            // No match found, deselect
+            // No match found, deselect (ensure only one selection state)
             selectedDocument = null;
             selectedDocId = null;
             documentSections = [];
@@ -729,18 +779,30 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     function updateDocumentSelectionUI() {
-        // Update all document items to show selection state
+        // Ensure only one document can be selected at a time
+        // First, remove selected class from ALL items
         const docItems = documentsList.querySelectorAll('.document-item');
         docItems.forEach(item => {
-            const docValue = item.dataset.docValue || item.title;
-            if (docValue === 'All Documents' && !selectedDocument) {
-                item.classList.add('selected');
-            } else if (selectedDocument === docValue) {
-                item.classList.add('selected');
-            } else {
-                item.classList.remove('selected');
-            }
+            item.classList.remove('selected');
         });
+        
+        // Then, add selected class to ONLY the matching item
+        if (selectedDocument) {
+            docItems.forEach(item => {
+                const docValue = item.dataset.docValue || item.title;
+                if (selectedDocument === docValue) {
+                    item.classList.add('selected');
+                }
+            });
+        } else {
+            // No document selected - select "All Documents" if it exists
+            docItems.forEach(item => {
+                const docValue = item.dataset.docValue || item.title;
+                if (docValue === 'All Documents') {
+                    item.classList.add('selected');
+                }
+            });
+        }
     }
     
     function addMessage(text, type, fromHistory) {

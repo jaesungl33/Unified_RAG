@@ -1,36 +1,22 @@
 """
 Token counting utilities for markdown chunking.
 
-Uses tiktoken for accurate token counting, with fallback to approximation.
+Uses approximation method for token counting.
 """
-
-try:
-    import tiktoken
-    TIKTOKEN_AVAILABLE = True
-except ImportError:
-    TIKTOKEN_AVAILABLE = False
 
 
 def count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
     """
-    Count tokens in text using tiktoken.
+    Count tokens in text using approximation method.
     
     Args:
         text: Text to count tokens for
-        model: Model name for tokenizer (default: gpt-3.5-turbo)
+        model: Model name for tokenizer (default: gpt-3.5-turbo, unused but kept for compatibility)
     
     Returns:
-        Number of tokens
+        Estimated number of tokens
     """
-    if not TIKTOKEN_AVAILABLE:
-        return estimate_tokens(text)
-    
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-        return len(encoding.encode(text))
-    except Exception:
-        # Fallback to estimation if tiktoken fails
-        return estimate_tokens(text)
+    return estimate_tokens(text)
 
 
 def estimate_tokens(text: str) -> int:
