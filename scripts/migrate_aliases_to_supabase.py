@@ -109,3 +109,4 @@ if __name__ == '__main__':
     print("🚀 Starting alias migration from file to Supabase...\n")
     migrate_aliases()
 
+

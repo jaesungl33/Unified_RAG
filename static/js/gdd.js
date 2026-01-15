@@ -882,12 +882,43 @@ document.addEventListener('DOMContentLoaded', function() {
             } catch (e) {
                 console.error('Failed to clear GDD chat history:', e);
             }
-            // Restore welcome message
+            // Get welcome message BEFORE clearing (if it exists)
+            const welcome = document.getElementById('gdd-welcome-message');
+            let welcomeClone = null;
+            
+            if (welcome) {
+                // Clone the welcome message before clearing
+                welcomeClone = welcome.cloneNode(true);
+            }
+            
+            // Clear chat container
             chatContainer.innerHTML = '';
-            const welcome = document.createElement('div');
-            welcome.className = 'message bot-message';
-            welcome.textContent = 'Welcome! Upload a document or select one from the sidebar to start querying.';
-            chatContainer.appendChild(welcome);
+            
+            // Restore welcome message
+            if (welcomeClone) {
+                welcomeClone.id = 'gdd-welcome-message';
+                welcomeClone.style.display = 'flex';
+                chatContainer.appendChild(welcomeClone);
+            } else {
+                // Fallback: recreate welcome message if it doesn't exist
+                const fallback = document.createElement('div');
+                fallback.id = 'gdd-welcome-message';
+                fallback.style.display = 'flex';
+                fallback.style.flexDirection = 'column';
+                fallback.style.alignItems = 'center';
+                fallback.style.textAlign = 'center';
+                fallback.style.padding = '60px 0';
+                fallback.innerHTML = `
+                    <div style="width: 48px; height: 48px; background: var(--muted); border-radius: 12px; display: flex; align-items: center; justify-content: center; margin-bottom: 16px;">
+                        <img src="/static/icons/chat.svg" width="24" height="24" opacity="0.5">
+                    </div>
+                    <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 8px;">GDD RAG Chatbot</h3>
+                    <p style="color: var(--muted-foreground); font-size: 0.875rem; max-width: 320px;">
+                        Ask questions about your documents. Use <span style="color: var(--primary); font-family: var(--font-mono);">@document</span> for specific files.
+                    </p>
+                `;
+                chatContainer.appendChild(fallback);
+            }
         });
     }
 

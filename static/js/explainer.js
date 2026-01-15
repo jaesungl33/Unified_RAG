@@ -74,10 +74,37 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Manage Aliases Event Listeners
     if (openAliasesBtn) openAliasesBtn.addEventListener('click', () => {
+        // Trigger 1-second animation
+        openAliasesBtn.classList.add('animating');
+        setTimeout(() => openAliasesBtn.classList.remove('animating'), 1000);
+
         aliasesDrawer.classList.add('open');
         loadAliases();
     });
     if (closeAliasesBtn) closeAliasesBtn.addEventListener('click', () => aliasesDrawer.classList.remove('open'));
+    
+    // Prevent clicks inside the drawer from propagating (e.g., collapsing sidebar)
+    if (aliasesDrawer) {
+        aliasesDrawer.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+    }
+    
+    // Close drawer when clicking outside
+    document.addEventListener('click', (e) => {
+        // Only attempt to close if drawer is open
+        if (aliasesDrawer && aliasesDrawer.classList.contains('open')) {
+            // "Outside" means not in the drawer, not on the button, and not in the modal
+            const isInsideDrawer = aliasesDrawer.contains(e.target);
+            const isButton = openAliasesBtn && openAliasesBtn.contains(e.target);
+            const isModal = addAliasKeywordDialog && addAliasKeywordDialog.contains(e.target);
+            
+            if (!isInsideDrawer && !isButton && !isModal) {
+                aliasesDrawer.classList.remove('open');
+            }
+        }
+    });
+
     if (aliasSearchInput) aliasSearchInput.addEventListener('input', (e) => {
         aliasState.searchQuery = e.target.value;
         renderAliases();
@@ -271,6 +298,12 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             
             const deepResult = await response.json();
+            
+            // Update message if retry was performed
+            if (deepResult.retry_performed) {
+                console.log('Not found, retrying with different keywords...');
+                resultsCount.innerHTML = '<div style="display:flex;align-items:center;gap:8px;"><div class="spinner" style="width:14px;height:14px;"></div> <span>Not found, retrying...</span></div>';
+            }
             
             if (deepResult.error) {
                 resultsCount.textContent = `Error: ${deepResult.error}`;
@@ -468,9 +501,18 @@ document.addEventListener('DOMContentLoaded', function() {
             confirmBtn.textContent = 'Adding...';
             
             try {
-                // Detect language of original keyword
-                const isVietnamese = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđĐ]/i.test(originalKeyword);
-                const language = isVietnamese ? 'vi' : 'en';
+                // Use parent keyword's language instead of detecting from alias name
+                // Find the selected keyword in the keywords list to get its language
+                let language = 'en'; // default
+                const selectedKw = aliasState.keywords.find(k => k.name.toLowerCase() === selectedKeyword.toLowerCase());
+                if (selectedKw && selectedKw.language) {
+                    const kwLang = selectedKw.language.toUpperCase();
+                    if (kwLang === 'VN' || kwLang === 'VI') {
+                        language = 'vi';
+                    } else if (kwLang === 'EN') {
+                        language = 'en';
+                    }
+                }
                 
                 const response = await fetch('/api/manage/aliases', {
                     method: 'POST',
@@ -621,14 +663,38 @@ document.addEventListener('DOMContentLoaded', function() {
             explanationOutput.style.display = 'flex';
             explanationOutput.style.alignItems = 'center';
             explanationOutput.style.justifyContent = 'center';
-            explanationOutput.innerHTML = '<div class="placeholder-text" style="padding-top:100px;"><p>Synthesizing context from selected documents...</p></div>';
+            explanationOutput.innerHTML = `
+                <div class="explainer-skeleton">
+                    <div class="wrapper">
+                        <div class="circle"></div>
+                        <div class="line-1"></div>
+                        <div class="line-2"></div>
+                        <div class="line-3"></div>
+                        <div class="line-4"></div>
+                    </div>
+                </div>
+            `;
             chunksOutput.innerHTML = '<p class="placeholder-text">Retrieving relevant chunks...</p>';
+            
+            // Resolve alias to parent keyword for explanation generation
+            // This ensures we use the actual keyword that exists in documents, not the alias
+            let explanationKeyword = keyword;
+            await loadAliases(); // Ensure aliases are loaded
+            
+            const foundAliasKW = aliasState.keywords.find(kw => 
+                kw.aliases.some(a => a.name.toLowerCase() === keyword.toLowerCase())
+            );
+            
+            if (foundAliasKW) {
+                explanationKeyword = foundAliasKW.name;
+                console.log(`Using parent keyword "${explanationKeyword}" for explanation (original alias: "${keyword}")`);
+            }
             
             const response = await fetch('/api/gdd/explainer/explain', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    keyword,
+                    keyword: explanationKeyword,
                     selected_choices: selectedChoices,
                     stored_results: storedResults
                 })
@@ -972,9 +1038,17 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         try {
-            // Detect language
-            const isVietnamese = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđĐ]/i.test(name.trim());
-            const language = isVietnamese ? 'vi' : 'en';
+            // Use parent keyword's language instead of detecting from alias name
+            // Map keyword language codes to API language codes
+            let language = 'en'; // default
+            if (kw.language) {
+                const kwLang = kw.language.toUpperCase();
+                if (kwLang === 'VN' || kwLang === 'VI') {
+                    language = 'vi';
+                } else if (kwLang === 'EN') {
+                    language = 'en';
+                }
+            }
             
             const response = await fetch('/api/manage/aliases', {
                 method: 'POST',
@@ -1073,7 +1147,8 @@ document.addEventListener('DOMContentLoaded', function() {
     function handleConfirmAddKeyword() {
         const nameInput = document.getElementById('new-alias-keyword-name');
         const name = nameInput.value.trim();
-        const lang = document.querySelector('.lang-select-btn.active').dataset.lang;
+        const langRadio = document.querySelector('input[name="new-alias-keyword-lang"]:checked');
+        const lang = langRadio ? langRadio.value : 'EN';
         
         if (!name) return;
         

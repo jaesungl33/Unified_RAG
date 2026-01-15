@@ -529,6 +529,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // --- ALIAS MANAGEMENT LOGIC ---
     const aliasKeywordsList = document.getElementById('alias-keywords-list');
+    const aliasLoader = document.getElementById('alias-loader-container');
     const aliasSearch = document.getElementById('alias-search');
     const aliasStats = document.getElementById('alias-stats');
     const aliasAddBtn = document.getElementById('alias-add-keyword-btn');
@@ -537,13 +538,18 @@ document.addEventListener('DOMContentLoaded', function() {
     const langFilterBtns = document.querySelectorAll('#tab-aliases .badge-btn');
 
     async function loadAliases() {
+        if (aliasLoader) aliasLoader.classList.remove('hidden');
         try {
             const res = await fetch('/api/manage/aliases');
             const data = await res.json();
             state.aliases.keywords = data.keywords || [];
             state.aliases.lastUpdated = data.lastUpdated;
             renderAliases();
-        } catch (e) { console.error("Load aliases failed", e); }
+        } catch (e) { 
+            console.error("Load aliases failed", e); 
+        } finally {
+            if (aliasLoader) aliasLoader.classList.add('hidden');
+        }
     }
 
     async function saveAliases() {
@@ -754,7 +760,8 @@ document.addEventListener('DOMContentLoaded', function() {
     if (confirmAddBtn) {
         confirmAddBtn.onclick = () => {
             const name = document.getElementById('new-keyword-name').value;
-            const lang = document.querySelector('.lang-select-btn.active').dataset.lang;
+            const langRadio = document.querySelector('input[name="keyword-lang"]:checked');
+            const lang = langRadio ? langRadio.value : 'EN';
             if (!name.trim()) return;
             
             if (state.aliases.keywords.some(k => k.name.toLowerCase() === name.trim().toLowerCase())) {

@@ -4,54 +4,83 @@
 
 {% block content %}
 <div class="home-container">
-    <div class="welcome-section">
-        <div class="icon-box">
-            <img src="{{ url_for('static', filename='icons/library.svg') }}" width="32" height="32" style="filter: invert(41%) sepia(85%) saturate(3015%) hue-rotate(222deg) brightness(101%) contrast(89%);">
+    <!-- Header Section -->
+    <div class="home-header">
+        <div class="home-header-title-row">
+            <div class="home-logo-box">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-database text-primary"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5V19A9 3 0 0 0 21 19V5"></path><path d="M3 12A9 3 0 0 0 21 12"></path></svg>
+            </div>
+            <h1>Unified RAG</h1>
         </div>
-        <h2>Unified RAG Assistant</h2>
-        <p>Your intelligent document and code assistant. Choose a feature to get started.</p>
+        <p class="home-header-subtitle">Your intelligent document and code assistant. Choose a feature to get started.</p>
     </div>
     
-    <div class="feature-cards">
-        <a href="/gdd" class="feature-card">
-            <div class="icon-wrapper" style="background: #E0E7FF;">
-                <img src="{{ url_for('static', filename='icons/chat.svg') }}" width="24" height="24" style="filter: invert(41%) sepia(85%) saturate(3015%) hue-rotate(222deg) brightness(101%) contrast(89%);">
-            </div>
-            <h3>GDD RAG</h3>
-            <p>Chat with your Game Design Documents. Upload PDFs, markdown, and text files to get intelligent answers about your game's systems and assets.</p>
-            <div class="metadata">
-                <img src="{{ url_for('static', filename='icons/file.svg') }}" width="14" height="14">
-                {{ gdd_count }} documents indexed
+    <!-- Feature Cards Grid -->
+    <div class="feature-cards-grid">
+        <!-- GDD RAG Card -->
+        <a href="/gdd" class="rag-feature-card group">
+            <div class="rag-card-header">
+                <div class="rag-card-icon-box bg-blue-soft">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-message-square"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                </div>
+                <div class="rag-card-title-group">
+                    <div class="rag-card-title">
+                        GDD RAG
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sparkles rag-card-sparkle"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path><path d="M20 3v4"></path><path d="M22 5h-4"></path><path d="M4 17v2"></path><path d="M5 18H3"></path></svg>
+                    </div>
+                    <div class="rag-card-description">Chat with your Game Design Documents. Upload PDFs, markdown, and text files to get intelligent answers.</div>
+                </div>
+                <div class="rag-card-stats">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-text"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path><path d="M10 9H8"></path><path d="M16 13H8"></path><path d="M16 17H8"></path></svg>
+                    {{ gdd_count }} documents indexed
+                </div>
             </div>
         </a>
         
-        <a href="/code" class="feature-card">
-            <div class="icon-wrapper" style="background: #ECFDF5;">
-                <img src="{{ url_for('static', filename='icons/code.svg') }}" width="24" height="24" style="filter: invert(53%) sepia(93%) saturate(415%) hue-rotate(113deg) brightness(96%) contrast(92%);">
-            </div>
-            <h3>Code RAG</h3>
-            <p>Query your codebase intelligently. Search through source files, find implementations, and get contextual explanations of your logic.</p>
-            <div class="metadata">
-                <img src="{{ url_for('static', filename='icons/file.svg') }}" width="14" height="14">
-                {{ code_count }} files indexed
+        <!-- Code RAG Card -->
+        <a href="/code" class="rag-feature-card group">
+            <div class="rag-card-header">
+                <div class="rag-card-icon-box bg-green-soft">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-code"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+                </div>
+                <div class="rag-card-title-group">
+                    <div class="rag-card-title">
+                        Code RAG
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sparkles rag-card-sparkle"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path><path d="M20 3v4"></path><path d="M22 5h-4"></path><path d="M4 17v2"></path><path d="M5 18H3"></path></svg>
+                    </div>
+                    <div class="rag-card-description">Query your codebase intelligently. Search through source files and get contextual explanations.</div>
+                </div>
+                <div class="rag-card-stats">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-text"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path><path d="M10 9H8"></path><path d="M16 13H8"></path><path d="M16 17H8"></path></svg>
+                    {{ code_count }} files indexed
+                </div>
             </div>
         </a>
         
-        <a href="/explainer" class="feature-card">
-            <div class="icon-wrapper" style="background: #FAF5FF;">
-                <img src="{{ url_for('static', filename='icons/library.svg') }}" width="24" height="24" style="filter: invert(54%) sepia(91%) saturate(3660%) hue-rotate(251deg) brightness(96%) contrast(105%);">
-            </div>
-            <h3>Keyword Finder</h3>
-            <p>Search for specific keywords across your documents and get detailed, structured explanations with contextual exploration.</p>
-            <div class="metadata">
-                <img src="{{ url_for('static', filename='icons/refresh.svg') }}" width="14" height="14">
-                Keyword-based exploration
+        <!-- Keyword Finder Card -->
+        <a href="/explainer" class="rag-feature-card group">
+            <div class="rag-card-header">
+                <div class="rag-card-icon-box bg-purple-soft">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                </div>
+                <div class="rag-card-title-group">
+                    <div class="rag-card-title">
+                        Keyword Finder
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sparkles rag-card-sparkle"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path><path d="M20 3v4"></path><path d="M22 5h-4"></path><path d="M4 17v2"></path><path d="M5 18H3"></path></svg>
+                    </div>
+                    <div class="rag-card-description">Search for specific keywords and get detailed, structured explanations with contextual exploration.</div>
+                </div>
+                <div class="rag-card-stats">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-globe"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+                    Topic-based analysis
+                </div>
             </div>
         </a>
     </div>
     
-    <p style="margin-top: 48px; color: var(--text-muted); font-size: 0.875rem;">
-        Tip: Use <code style="background: #F1F5F9; padding: 2px 6px; border-radius: 4px;">@documentname</code> in chat to reference specific documents
+    <!-- Tip Section -->
+    <p class="home-tip-section">
+        Tip: Use <kbd class="kbd-style">@documentname</kbd> in chat to reference specific documents
     </p>
 </div>
 {% endblock %}

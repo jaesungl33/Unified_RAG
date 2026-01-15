@@ -139,9 +139,11 @@
                     <!-- Header -->
                     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
                         <h3 style="font-size: 0.875rem; font-weight: 600;">Manage Aliases</h3>
-                        <button id="alias-add-keyword-btn" class="btn-primary" style="height: 36px; padding: 0 16px; font-size: 0.875rem; gap: 8px;">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>
-                            Add Keyword
+                        <button id="alias-add-keyword-btn" class="add-keyword-button-wrapper">
+                            <span class="button__text">Add Keyword</span>
+                            <span class="button__icon">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svg-icon"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg>
+                            </span>
                         </button>
                     </div>
 
@@ -166,7 +168,21 @@
                     </div>
 
                     <!-- Keywords List -->
-                    <div id="alias-keywords-list" class="scroll-area" style="border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 8px; min-height: 200px;">
+                    <div id="alias-keywords-list" class="scroll-area" style="border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 8px; min-height: 200px; position: relative;">
+                        <!-- Loading State -->
+                        <div id="alias-loader-container" class="hidden" style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.8); z-index: 10; border-radius: var(--radius-lg);">
+                            <div class="loader">
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                            </div>
+                        </div>
                         <!-- Keywords will be rendered here -->
                     </div>
                 </div>
@@ -189,9 +205,15 @@
             </div>
             <div style="display: flex; flex-direction: column; gap: 8px;">
                 <label style="font-size: 0.75rem; font-weight: 600; color: var(--muted-foreground);">Language</label>
-                <div style="display: flex; gap: 8px;">
-                    <button class="lang-select-btn active" data-lang="EN" style="flex: 1; height: 36px; border-radius: var(--radius-md); border: 1px solid var(--border); background: white; cursor: pointer;">English</button>
-                    <button class="lang-select-btn" data-lang="VN" style="flex: 1; height: 36px; border-radius: var(--radius-md); border: 1px solid var(--border); background: white; cursor: pointer;">Vietnamese</button>
+                <div class="radio-inputs" style="width: 100%;">
+                    <label class="radio">
+                        <input type="radio" name="keyword-lang" value="EN" checked>
+                        <span class="name">English</span>
+                    </label>
+                    <label class="radio">
+                        <input type="radio" name="keyword-lang" value="VN">
+                        <span class="name">Vietnamese</span>
+                    </label>
                 </div>
             </div>
             <button id="confirm-add-keyword" class="btn-primary" style="width: 100%; margin-top: 8px;">Create Keyword</button>
