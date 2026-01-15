@@ -753,24 +753,62 @@ def get_gdd_sections():
 @app.route('/api/gdd/explainer/search', methods=['POST'])
 def explainer_search():
     """Search for keyword and return document/section options"""
+    app.logger.info("=" * 80)
+    app.logger.info("[EXPLAINER SEARCH] Endpoint called")
+    app.logger.info(f"[EXPLAINER SEARCH] Request method: {request.method}")
+    app.logger.info(f"[EXPLAINER SEARCH] Content-Type: {request.content_type}")
+    app.logger.info(f"[EXPLAINER SEARCH] Headers: {dict(request.headers)}")
+    
     try:
         from backend.gdd_explainer import search_for_explainer
         
+        app.logger.info("[EXPLAINER SEARCH] Getting JSON data from request")
         data = request.get_json()
-        keyword = data.get('keyword', '')
+        app.logger.info(f"[EXPLAINER SEARCH] Request data: {data}")
         
+        keyword = data.get('keyword', '') if data else ''
+        app.logger.info(f"[EXPLAINER SEARCH] Extracted keyword: '{keyword}' (type: {type(keyword)}, length: {len(keyword) if keyword else 0})")
+        
+        if not keyword:
+            app.logger.warning("[EXPLAINER SEARCH] Empty keyword received")
+            return jsonify({
+                'choices': [],
+                'store_data': [],
+                'status_msg': "Please enter a keyword to search.",
+                'success': False
+            }), 200
+        
+        app.logger.info("[EXPLAINER SEARCH] Calling search_for_explainer()")
         result = search_for_explainer(keyword)
-        return jsonify(result)
+        app.logger.info(f"[EXPLAINER SEARCH] search_for_explainer() returned: {type(result)}")
+        app.logger.info(f"[EXPLAINER SEARCH] Result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
+        app.logger.info(f"[EXPLAINER SEARCH] Result success: {result.get('success') if isinstance(result, dict) else 'N/A'}")
+        app.logger.info(f"[EXPLAINER SEARCH] Result choices count: {len(result.get('choices', [])) if isinstance(result, dict) else 'N/A'}")
+        
+        app.logger.info("[EXPLAINER SEARCH] Returning JSON response")
+        response = jsonify(result)
+        app.logger.info(f"[EXPLAINER SEARCH] Response status: {response.status_code}")
+        app.logger.info("=" * 80)
+        return response
     except Exception as e:
-        app.logger.error(f"Error in explainer search: {e}")
+        app.logger.error("=" * 80)
+        app.logger.error(f"[EXPLAINER SEARCH] ERROR: {str(e)}")
+        app.logger.error(f"[EXPLAINER SEARCH] Error type: {type(e).__name__}")
         import traceback
-        app.logger.error(traceback.format_exc())
-        return jsonify({
-            'choices': [],
-            'store_data': [],
-            'status_msg': f"❌ Error: {str(e)}",
-            'success': False
-        }), 500
+        app.logger.error(f"[EXPLAINER SEARCH] Full traceback:\n{traceback.format_exc()}")
+        app.logger.error("=" * 80)
+        
+        try:
+            error_response = jsonify({
+                'choices': [],
+                'store_data': [],
+                'status_msg': f"❌ Error: {str(e)}",
+                'success': False
+            })
+            return error_response, 500
+        except Exception as json_error:
+            app.logger.error(f"[EXPLAINER SEARCH] Failed to create JSON error response: {json_error}")
+            return f"Error: {str(e)}", 500
 
 @app.route('/api/gdd/explainer/explain', methods=['POST'])
 def explainer_explain():

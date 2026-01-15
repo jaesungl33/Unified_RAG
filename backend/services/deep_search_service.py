@@ -197,7 +197,12 @@ def check_words_against_aliases_and_database(words: List[str]) -> Dict[str, Any]
         
         # Check if keyword itself exists in database
         # Get more results to verify the keyword actually appears
-        results = keyword_search(keyword_original, limit=10)
+        try:
+            results = keyword_search(keyword_original, limit=10)
+        except Exception as e:
+            logger.error(f"[Deep Search Verification] Error searching for '{keyword_original}': {e}")
+            results = None
+        
         if results and len(results) > 0:
             # Verify keyword actually appears in the content (not just fuzzy match)
             # Check if keyword appears in at least one result's content
@@ -225,7 +230,12 @@ def check_words_against_aliases_and_database(words: List[str]) -> Dict[str, Any]
                 base_keyword = match.get('keyword', '').strip()
                 if base_keyword:
                     # Verify base keyword exists in database
-                    base_results = keyword_search(base_keyword, limit=10)
+                    try:
+                        base_results = keyword_search(base_keyword, limit=10)
+                    except Exception as e:
+                        logger.error(f"[Deep Search Verification] Error searching for base keyword '{base_keyword}': {e}")
+                        base_results = None
+                    
                     if base_results and len(base_results) > 0:
                         # Check if base keyword appears in results
                         base_keyword_lower = base_keyword.lower()

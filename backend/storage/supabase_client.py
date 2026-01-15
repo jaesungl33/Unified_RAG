@@ -65,10 +65,19 @@ def get_supabase_client(use_service_key: bool = False) -> Client:
             if not SUPABASE_URL or not SUPABASE_KEY:
                 logger.error("SUPABASE_URL or SUPABASE_KEY not configured")
                 raise ValueError("Supabase URL and key must be configured. Set SUPABASE_URL and SUPABASE_KEY in .env file.")
-            logger.info(f"Creating anon client with URL: {SUPABASE_URL[:30]}...")
-            logger.info(f"Using anon key starting with: {SUPABASE_KEY[:20]}...")
-            supabase_anon = create_client(SUPABASE_URL, SUPABASE_KEY)
-            logger.info("✅ Anon client created successfully")
+            logger.info(f"[SUPABASE CLIENT] Creating anon client")
+            logger.info(f"[SUPABASE CLIENT] URL: {SUPABASE_URL[:50]}..." if SUPABASE_URL else "[SUPABASE CLIENT] URL: None")
+            logger.info(f"[SUPABASE CLIENT] Key starts with: {SUPABASE_KEY[:20]}..." if SUPABASE_KEY else "[SUPABASE CLIENT] Key: None")
+            try:
+                supabase_anon = create_client(SUPABASE_URL, SUPABASE_KEY)
+                logger.info("[SUPABASE CLIENT] ✅ Anon client created successfully")
+            except Exception as e:
+                logger.error(f"[SUPABASE CLIENT] ❌ Failed to create anon client: {e}")
+                logger.error(f"[SUPABASE CLIENT] Exception type: {type(e).__name__}")
+                import traceback
+                logger.error(f"[SUPABASE CLIENT] Traceback:\n{traceback.format_exc()}")
+                raise
+        logger.info("[SUPABASE CLIENT] Returning existing anon client")
         return supabase_anon
 
 def vector_search_gdd_chunks(

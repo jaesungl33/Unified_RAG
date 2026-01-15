@@ -46,7 +46,7 @@ document.addEventListener('DOMContentLoaded', function() {
     selectAllCheckbox.addEventListener('change', handleSelectAll);
     selectNoneCheckbox.addEventListener('change', handleSelectNone);
     explainBtn.addEventListener('click', generateExplanation);
-
+    
     // Collapsible Logic
     const selectionHeader = document.getElementById('selection-header');
     const selectionContent = document.getElementById('selection-content');
@@ -195,13 +195,13 @@ document.addEventListener('DOMContentLoaded', function() {
             let mergedKeys = new Set();
 
             for (const kw of searchKeywords) {
-                const response = await fetch('/api/gdd/explainer/search', {
-                    method: 'POST',
+            const response = await fetch('/api/gdd/explainer/search', {
+                method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ keyword: kw })
                 });
-                const result = await response.json();
-                
+            const result = await response.json();
+            
                 if (result.success && result.choices) {
                     result.choices.forEach((choice, idx) => {
                         const storeItem = result.store_data[idx];

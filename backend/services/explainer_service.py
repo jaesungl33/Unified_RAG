@@ -250,7 +250,7 @@ def explain_keyword(
             # Skip chunks without required fields
             if not chunk.get('doc_id') or chunk.get('content') is None:
                 continue
-            
+                
             doc_id = chunk.get('doc_id', '')
             doc_name = doc_name_map.get(doc_id, doc_id)  # Get friendly filename
             section_heading = chunk.get('section_heading')
