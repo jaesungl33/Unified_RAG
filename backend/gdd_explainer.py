@@ -2,167 +2,158 @@
 GDD Document Explainer backend functions.
 EXACT COPY of logic from keyword_extractor - only adapted for Flask JSON responses.
 """
-from typing import List, Dict, Optional, Any
+import json
+import logging
+import traceback
+from typing import List, Dict, Optional, Any, Generator
 from backend.services.search_service import keyword_search
 from backend.services.explainer_service import explain_keyword
-from backend.storage.keyword_storage import list_keyword_documents
+from backend.storage.keyword_storage import list_keyword_documents, find_keyword_by_alias
+
+logger = logging.getLogger(__name__)
+
+
+def _process_search_results(results: List[Dict], keyword: str, progress_messages: List[str] = None) -> Dict[str, Any]:
+    """Process search results into the expected format."""
+    doc_sections = {}
+    
+    for result in results:
+        try:
+            doc_id = result.get('doc_id')
+            doc_name = result.get('doc_name', 'Unknown Document')
+            section = result.get('section_heading')
+            
+            if not section or not section.strip():
+                continue
+            
+            key = (doc_id, doc_name, section)
+            if key not in doc_sections:
+                doc_sections[key] = {
+                    'doc_id': doc_id,
+                    'doc_name': doc_name,
+                    'section_heading': section,
+                    'relevance': result.get('relevance', 0.0)
+                }
+        except Exception as e:
+            logger.error(f"Error processing result: {e}", exc_info=True)
+            continue
+    
+    sorted_items = sorted(
+        doc_sections.values(),
+        key=lambda x: x['relevance'],
+        reverse=True
+    )
+    
+    choices = []
+    store_data = []
+    
+    for item in sorted_items:
+        try:
+            display_name = _extract_display_name(item['doc_name'])
+            section_display = item['section_heading'] or "(No section)"
+            choice_label = f"{display_name} → {section_display}"
+            
+            choices.append(choice_label)
+            store_data.append({
+                'doc_id': item['doc_id'],
+                'section_heading': item['section_heading']
+            })
+        except Exception as e:
+            logger.error(f"Error creating choice: {e}", exc_info=True)
+            continue
+    
+    if progress_messages is not None:
+        progress_messages.append(f"✅ Found {len(sorted_items)} document/section combinations!")
+    
+    return {
+        'choices': choices,
+        'store_data': store_data,
+        'status_msg': f"✅ Found {len(sorted_items)} document/section combinations. Select which ones to explain.",
+        'success': True,
+        'keyword': keyword,
+        'progress_messages': progress_messages or []
+    }
 
 
 def search_for_explainer(keyword: str) -> Dict[str, Any]:
     """
     Search for keyword and return results as checkboxes for selection.
-    EXACT COPY from keyword_extractor - adapted to return dict instead of Gradio components.
+    Includes automatic translation and synonym finding before falling back to LLM.
     
     Args:
         keyword: Search keyword
     
     Returns:
-        Dict with 'choices', 'store_data', 'status_msg', 'last_keyword'
+        Dict with 'choices', 'store_data', 'status_msg', 'keyword', 'progress_messages'
     """
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    logger.info("=" * 80)
-    logger.info(f"[SEARCH FOR EXPLAINER] Function called")
-    logger.info(f"[SEARCH FOR EXPLAINER] Input keyword: '{keyword}' (type: {type(keyword)})")
-    
     keyword_stripped = keyword.strip() if keyword else ""
-    logger.info(f"[SEARCH FOR EXPLAINER] Stripped keyword: '{keyword_stripped}'")
     
-    if not keyword or not keyword_stripped:
-        logger.warning("[SEARCH FOR EXPLAINER] Empty keyword, returning empty response")
+    if not keyword_stripped:
         return {
             'choices': [],
             'store_data': [],
             'status_msg': "Please enter a keyword to search.",
-            'success': False
+            'success': False,
+            'progress_messages': []
         }
     
     try:
-        logger.info(f"[SEARCH FOR EXPLAINER] Calling keyword_search('{keyword_stripped}', limit=100)")
-        results = keyword_search(keyword_stripped, limit=100)
-        logger.info(f"[SEARCH FOR EXPLAINER] keyword_search returned: {type(results)}")
-        logger.info(f"[SEARCH FOR EXPLAINER] Results is None: {results is None}")
-        logger.info(f"[SEARCH FOR EXPLAINER] Results length: {len(results) if results else 'N/A'}")
+        progress_messages = []
         
-        # Check if results is None or empty
-        if results is None or not results or len(results) == 0:
-            logger.info("[SEARCH FOR EXPLAINER] No results found, returning empty response")
-            return {
-                'choices': [],
-                'store_data': [],
-                'status_msg': "No results found. Try a different keyword or check if documents are indexed.",
-                'success': True,  # Changed to True since no results is not an error
-                'keyword': keyword_stripped
-            }
+        # Step 1: Search database for original keyword AND its translation immediately
+        results = _search_with_translation(keyword_stripped, progress_messages)
+        if results:
+            return _process_search_results(results, keyword_stripped, progress_messages)
         
-        logger.info(f"[SEARCH FOR EXPLAINER] Processing {len(results)} results")
+        # Step 2: Search aliases for both original and translated keywords
+        results = _search_aliases(keyword_stripped, progress_messages)
+        if results:
+            return _process_search_results(results, keyword_stripped, progress_messages)
         
-        # Group by document and section
-        # Filter out items with no section (section_heading is None or empty)
-        logger.info("[SEARCH FOR EXPLAINER] Grouping results by document and section")
-        doc_sections = {}
-        skipped_no_section = 0
-        for idx, r in enumerate(results):
-            try:
-                doc_id = r.get('doc_id')
-                doc_name = r.get('doc_name', 'Unknown Document')
-                section = r.get('section_heading')
-                
-                # Skip items without a section heading
-                if not section or section.strip() == '':
-                    skipped_no_section += 1
-                    continue
-                
-                # Create unique key for document-section pair
-                key = (doc_id, doc_name, section)
-                if key not in doc_sections:
-                    doc_sections[key] = {
-                        'doc_id': doc_id,
-                        'doc_name': doc_name,
-                        'section_heading': section,
-                        'relevance': r.get('relevance', 0.0)
-                    }
-            except Exception as e:
-                logger.error(f"[SEARCH FOR EXPLAINER] Error processing result {idx}: {e}")
-                continue
+        # Also check aliases for translated keyword
+        try:
+            from backend.services.translation_synonym_service import translate_with_google, detect_language_local
+            trans_result = translate_with_google(keyword_stripped)
+            if trans_result.get('success'):
+                translation = trans_result.get('translated_text', '')
+                if translation and translation.lower() != keyword_stripped.lower():
+                    results = _search_aliases(translation, progress_messages)
+                    if results:
+                        return _process_search_results(results, keyword_stripped, progress_messages)
+        except Exception:
+            pass
         
-        logger.info(f"[SEARCH FOR EXPLAINER] Grouped into {len(doc_sections)} unique doc-section pairs")
-        logger.info(f"[SEARCH FOR EXPLAINER] Skipped {skipped_no_section} results without section headings")
+        # Step 3: Try synonyms (if translation already done, reuse it)
+        progress_messages.append("Not found.. Creating synonyms..")
+        results = _try_translation_and_synonyms(keyword_stripped, progress_messages)
+        if results:
+            return _process_search_results(results, keyword_stripped, progress_messages)
         
-        # Sort by relevance (highest first)
-        logger.info("[SEARCH FOR EXPLAINER] Sorting by relevance")
-        sorted_items = sorted(
-            doc_sections.values(),
-            key=lambda x: x['relevance'],
-            reverse=True
-        )
-        logger.info(f"[SEARCH FOR EXPLAINER] Sorted {len(sorted_items)} items")
+        # Step 4: Try LLM deep search as final fallback
+        results = _try_llm_deep_search(keyword_stripped, progress_messages)
+        if results:
+            return _process_search_results(results, keyword_stripped, progress_messages)
         
-        # Create checkbox choices and store data
-        logger.info("[SEARCH FOR EXPLAINER] Creating choices and store_data")
-        choices = []
-        store_data = []
-        
-        for idx, item in enumerate(sorted_items):
-            try:
-                # Extract filename for display (remove .pdf extension if present)
-                display_name = item['doc_name']
-                if '\\' in display_name:
-                    display_name = display_name.split('\\')[-1]
-                elif '/' in display_name:
-                    display_name = display_name.split('/')[-1]
-                
-                # Remove .pdf extension for cleaner display
-                if display_name.lower().endswith('.pdf'):
-                    display_name = display_name[:-4]
-                
-                section_display = item['section_heading'] if item['section_heading'] else "(No section)"
-                
-                # Create choice label
-                choice_label = f"{display_name} → {section_display}"
-                choices.append(choice_label)
-                
-                # Store actual data
-                store_data.append({
-                    'doc_id': item['doc_id'],
-                    'section_heading': item['section_heading']
-                })
-            except Exception as e:
-                logger.error(f"[SEARCH FOR EXPLAINER] Error creating choice for item {idx}: {e}")
-                continue
-        
-        logger.info(f"[SEARCH FOR EXPLAINER] Created {len(choices)} choices and {len(store_data)} store_data entries")
-        status_msg = f"✅ Found {len(sorted_items)} document/section combinations. Select which ones to explain."
-        
-        result_dict = {
-            'choices': choices,
-            'store_data': store_data,
-            'status_msg': status_msg,
+        # Step 5: No results found
+        progress_messages.append("No results found after all search attempts")
+        return {
+            'choices': [],
+            'store_data': [],
+            'status_msg': "No results found even after trying translation, synonyms, and LLM search.",
             'success': True,
-            'keyword': keyword_stripped
+            'keyword': keyword_stripped,
+            'progress_messages': progress_messages
         }
         
-        logger.info(f"[SEARCH FOR EXPLAINER] Returning result with {len(choices)} choices")
-        logger.info(f"[SEARCH FOR EXPLAINER] Result dict keys: {list(result_dict.keys())}")
-        logger.info("=" * 80)
-        return result_dict
-        
     except Exception as e:
-        logger.error("=" * 80)
-        logger.error(f"[SEARCH FOR EXPLAINER] EXCEPTION: {str(e)}")
-        logger.error(f"[SEARCH FOR EXPLAINER] Exception type: {type(e).__name__}")
-        import traceback
-        full_traceback = traceback.format_exc()
-        logger.error(f"[SEARCH FOR EXPLAINER] Full traceback:\n{full_traceback}")
-        logger.error("=" * 80)
-        
+        logger.error(f"Exception in search_for_explainer: {e}", exc_info=True)
         return {
             'choices': [],
             'store_data': [],
             'status_msg': f"❌ Error: {str(e)}",
             'success': False,
-            'keyword': keyword_stripped if 'keyword_stripped' in locals() else ''
+            'keyword': keyword_stripped,
+            'progress_messages': []
         }
 
 
@@ -365,6 +356,302 @@ def select_none_items() -> Dict[str, Any]:
         Dict with empty 'choices' list
     """
     return {'choices': []}
+
+
+def _extract_display_name(doc_name: str) -> str:
+    """Extract and clean display name from document path."""
+    if '\\' in doc_name:
+        display_name = doc_name.split('\\')[-1]
+    elif '/' in doc_name:
+        display_name = doc_name.split('/')[-1]
+    else:
+        display_name = doc_name
+    
+    if display_name.lower().endswith('.pdf'):
+        display_name = display_name[:-4]
+    
+    return display_name
+
+
+def _search_aliases(keyword: str, progress_messages: List[str] = None, emit: Optional[callable] = None) -> List[Dict]:
+    """Search using alias dictionary. Returns results if found, empty list otherwise."""
+    msg = f"Searching aliases for {keyword}"
+    if emit:
+        emit(msg)
+    if progress_messages is not None:
+        progress_messages.append(msg)
+    
+    alias_matches = find_keyword_by_alias(keyword.lower())
+    
+    if not alias_matches:
+        return []
+    
+    # Search database for each base keyword from alias matches
+    for match in alias_matches:
+        base_keyword = match.get('keyword', '')
+        if base_keyword and base_keyword != keyword.lower():  # Skip if already searched
+            msg = f"Searching database for {base_keyword}"
+            if emit:
+                emit(msg)
+            if progress_messages is not None:
+                progress_messages.append(msg)
+            
+            results = keyword_search(base_keyword, limit=100)
+            if results:
+                msg = f"Found for {base_keyword}"
+                if emit:
+                    emit(msg)
+                if progress_messages is not None:
+                    progress_messages.append(msg)
+                return results
+    
+    return []
+
+
+def _search_database(keyword: str, progress_messages: List[str] = None, emit: Optional[callable] = None) -> List[Dict]:
+    """Search database directly. Returns results if found, empty list otherwise."""
+    msg = f"Searching database for {keyword}"
+    if emit:
+        emit(msg)
+    if progress_messages is not None:
+        progress_messages.append(msg)
+    
+    results = keyword_search(keyword, limit=100)
+    if results:
+        msg = f"Found for {keyword}"
+        if emit:
+            emit(msg)
+        if progress_messages is not None:
+            progress_messages.append(msg)
+        return results
+    return []
+
+
+def _search_with_translation(keyword: str, progress_messages: List[str] = None, emit: Optional[callable] = None) -> List[Dict]:
+    """Search for both original keyword and its translation. Returns combined results."""
+    all_results = []
+    seen_keys = set()
+    
+    # Step 1: Search for original keyword
+    results = _search_database(keyword, progress_messages, emit)
+    if results:
+        for r in results:
+            key = (r.get('doc_id'), r.get('section_heading'))
+            if key not in seen_keys:
+                all_results.append(r)
+                seen_keys.add(key)
+    
+    # Step 2: Translate and search for translated keyword
+    try:
+        from backend.services.translation_synonym_service import translate_with_google, detect_language_local
+        
+        detected_lang = detect_language_local(keyword)
+        msg = f"Translating {keyword} ({'Vietnamese' if detected_lang == 'vi' else 'English'} → {'English' if detected_lang == 'vi' else 'Vietnamese'})"
+        if emit:
+            emit(msg)
+        if progress_messages is not None:
+            progress_messages.append(msg)
+        
+        trans_result = translate_with_google(keyword)
+        
+        if trans_result.get('success'):
+            translation = trans_result.get('translated_text', '')
+            if translation and translation.lower() != keyword.lower():
+                msg = f"Translation: {translation}"
+                if emit:
+                    emit(msg)
+                if progress_messages is not None:
+                    progress_messages.append(msg)
+                
+                # Search for translated keyword
+                results = _search_database(translation, progress_messages, emit)
+                if results:
+                    for r in results:
+                        key = (r.get('doc_id'), r.get('section_heading'))
+                        if key not in seen_keys:
+                            all_results.append(r)
+                            seen_keys.add(key)
+        
+    except Exception as e:
+        logger.warning(f"Translation failed: {e}")
+    
+    return all_results
+
+
+def _try_translation_and_synonyms(keyword: str, progress_messages: List[str] = None, emit: Optional[callable] = None) -> List[Dict]:
+    """Try searching with synonyms (translation already done earlier). Returns results if found, empty list otherwise."""
+    try:
+        from backend.services.translation_synonym_service import auto_translate_and_find_synonyms
+        
+        trans_result = auto_translate_and_find_synonyms(keyword)
+        
+        if not trans_result.get('success'):
+            logger.warning(f"Translation/synonym service failed: {trans_result.get('error', 'Translation failed')}")
+            return []
+        
+        translation = trans_result.get('translation', '')
+        synonyms_original = trans_result.get('synonyms_original', [])
+        synonyms_translated = trans_result.get('synonyms_translated', [])
+        
+        # Try synonyms (translation already searched in _search_with_translation)
+        all_synonyms = synonyms_original + synonyms_translated
+        if all_synonyms:
+            msg = f"Creating synonyms for {keyword} and for {translation}"
+            if emit:
+                emit(msg)
+            if progress_messages is not None:
+                progress_messages.append(msg)
+            
+            for synonym in all_synonyms:
+                if not synonym or synonym == keyword or synonym == translation:
+                    continue
+                
+                results = _search_aliases(synonym, progress_messages, emit)
+                if results:
+                    return results
+                
+                results = _search_database(synonym, progress_messages, emit)
+                if results:
+                    return results
+        
+        return []
+        
+    except Exception as e:
+        logger.error(f"Error in synonym step: {e}", exc_info=True)
+        return []
+
+
+def _try_llm_deep_search(keyword: str, progress_messages: List[str] = None, emit: Optional[callable] = None) -> List[Dict]:
+    """Try LLM-based deep search as final fallback. Returns results if found, empty list otherwise."""
+    try:
+        from backend.services.deep_search_service import deep_search_keyword
+        
+        msg = "Not found... Searching deeper with LLM"
+        if emit:
+            emit(msg)
+        if progress_messages is not None:
+            progress_messages.append(msg)
+        
+        # Deep search uses LLM to generate translations and synonyms
+        result = deep_search_keyword(keyword)
+        
+        if result.get('found'):
+            selected_keyword = result.get('selected_keyword', '')
+            if selected_keyword:
+                msg = f"LLM found potential match: {selected_keyword}"
+                if emit:
+                    emit(msg)
+                if progress_messages is not None:
+                    progress_messages.append(msg)
+                
+                # Search with the LLM-suggested keyword
+                search_results = _search_aliases(selected_keyword, progress_messages, emit)
+                if search_results:
+                    return search_results
+                
+                search_results = _search_database(selected_keyword, progress_messages, emit)
+                if search_results:
+                    return search_results
+        
+        return []
+        
+    except Exception as e:
+        logger.error(f"Error in LLM deep search: {e}", exc_info=True)
+        return []
+
+
+def search_for_explainer_stream(keyword: str) -> Generator[str, None, None]:
+    """
+    Stream search progress using Server-Sent Events (SSE).
+    Yields messages one at a time as the search progresses.
+    
+    Args:
+        keyword: Search keyword
+    
+    Yields:
+        SSE-formatted messages
+    """
+    def emit(msg: str):
+        """Emit a message in SSE format."""
+        yield f"data: {json.dumps({'message': msg})}\n\n"
+    
+    keyword_stripped = keyword.strip() if keyword else ""
+    
+    if not keyword_stripped:
+        yield from emit("Please enter a keyword.")
+        yield from emit("__DONE__")
+        return
+    
+    try:
+        # Use a list to collect messages for emit callback
+        message_list = []
+        
+        def emit_callback(msg: str):
+            """Callback that collects messages for immediate yielding."""
+            message_list.append(msg)
+        
+        # Step 1: Search database for original keyword AND its translation immediately
+        results = _search_with_translation(keyword_stripped, emit=emit_callback)
+        while message_list:
+            yield from emit(message_list.pop(0))
+        
+        if results:
+            yield from emit("__DONE__")
+            return
+        
+        # Step 2: Search aliases for both original and translated keywords
+        results = _search_aliases(keyword_stripped, emit=emit_callback)
+        while message_list:
+            yield from emit(message_list.pop(0))
+        
+        if results:
+            yield from emit("__DONE__")
+            return
+        
+        # Also check aliases for translated keyword
+        try:
+            from backend.services.translation_synonym_service import translate_with_google, detect_language_local
+            trans_result = translate_with_google(keyword_stripped)
+            if trans_result.get('success'):
+                translation = trans_result.get('translated_text', '')
+                if translation and translation.lower() != keyword_stripped.lower():
+                    results = _search_aliases(translation, emit=emit_callback)
+                    while message_list:
+                        yield from emit(message_list.pop(0))
+                    if results:
+                        yield from emit("__DONE__")
+                        return
+        except Exception:
+            pass
+        
+        # Step 3: Try automatic translation and synonyms
+        yield from emit("Not found.. Translating..")
+        
+        results = _try_translation_and_synonyms(keyword_stripped, emit=emit_callback)
+        while message_list:
+            yield from emit(message_list.pop(0))
+        
+        if results:
+            yield from emit("__DONE__")
+            return
+        
+        # Step 4: Try LLM deep search as final fallback
+        results = _try_llm_deep_search(keyword_stripped, emit=emit_callback)
+        while message_list:
+            yield from emit(message_list.pop(0))
+        
+        if results:
+            yield from emit("__DONE__")
+            return
+        
+        # Step 5: No results found
+        yield from emit("No results found after all search attempts")
+        yield from emit("__DONE__")
+        
+    except Exception as e:
+        logger.error(f"Exception in search_for_explainer_stream: {e}", exc_info=True)
+        yield from emit(f"❌ Error: {str(e)}")
+        yield from emit("__DONE__")
 
 
 

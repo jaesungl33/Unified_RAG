@@ -837,6 +837,39 @@ def explainer_search():
             app.logger.error(f"[EXPLAINER SEARCH] Failed to create JSON error response: {json_error}")
             return f"Error: {str(e)}", 500
 
+@app.route('/api/gdd/explainer/search/stream', methods=['GET'])
+def explainer_search_stream():
+    """Stream search progress using Server-Sent Events (SSE)"""
+    try:
+        from backend.gdd_explainer import search_for_explainer_stream
+        
+        keyword = request.args.get('keyword', '')
+        
+        return Response(
+            stream_with_context(search_for_explainer_stream(keyword)),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',  # IMPORTANT (nginx)
+            }
+        )
+    except Exception as e:
+        app.logger.error(f"Error setting up search stream: {e}")
+        import traceback
+        app.logger.error(traceback.format_exc())
+        import json
+        def error_stream():
+            yield f"data: {json.dumps({'message': f'❌ Error: {str(e)}'})}\n\n"
+            yield f"data: {json.dumps({'message': '__DONE__'})}\n\n"
+        return Response(
+            stream_with_context(error_stream()),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',
+            }
+        ), 500
+
 @app.route('/api/gdd/explainer/explain', methods=['POST'])
 def explainer_explain():
     """Generate explanation from selected items"""
