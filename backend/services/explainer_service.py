@@ -80,6 +80,123 @@ def get_all_chunks_from_section(doc_id: str, section_heading: str) -> List[Dict[
     return result.data if result.data else []
 
 
+def _filter_missing_info_statements(text: str) -> str:
+    """
+    Remove statements about missing information from the explanation.
+    Removes lines containing missing information statements, and removes entire sections
+    if they only contain such statements.
+    
+    Args:
+        text: Explanation text
+    
+    Returns:
+        Filtered text without statements about missing information
+    """
+    if not text:
+        return text
+    
+    lines = text.split('\n')
+    filtered_lines = []
+    
+    # Patterns to match statements about missing information
+    missing_info_patterns = [
+        r'the document does not specify',
+        r'the document does not provide',
+        r'the document does not contain',
+        r'this chunk does not contain',
+        r'no information.*provided',
+        r'no information.*specified',
+        r'information.*not.*available',
+        r'information.*not.*specified',
+        r'information.*not.*provided',
+        r'the document.*does not.*mention',
+        r'there is no information',
+        r'does not provide.*information',
+        r'does not specify.*information',
+    ]
+    
+    current_section = []
+    
+    for line in lines:
+        line_lower = line.lower().strip()
+        
+        # Check if this line is a section header (starts with number)
+        is_section_header = re.match(r'^\d+\.', line.strip())
+        
+        # Check if line contains missing information statements
+        contains_missing_info = any(re.search(pattern, line_lower) for pattern in missing_info_patterns) if line_lower else False
+        
+        if is_section_header:
+            # Process previous section: check if it has real content
+            if current_section:
+                section_text = '\n'.join(current_section).lower()
+                # Check if section has any non-missing-info content
+                section_lines = section_text.split('\n')
+                has_real_content = False
+                for sec_line in section_lines:
+                    if sec_line.strip() and not re.match(r'^\d+\.', sec_line.strip()):
+                        if not any(re.search(pattern, sec_line) for pattern in missing_info_patterns):
+                            has_real_content = True
+                            break
+                
+                # Only add section if it has real content
+                if has_real_content:
+                    # Filter out missing info lines from section
+                    filtered_section = []
+                    for sec_line in current_section:
+                        sec_line_lower = sec_line.lower().strip()
+                        if not sec_line_lower or re.match(r'^\d+\.', sec_line.strip()):
+                            filtered_section.append(sec_line)
+                        elif not any(re.search(pattern, sec_line_lower) for pattern in missing_info_patterns):
+                            filtered_section.append(sec_line)
+                    
+                    if filtered_section:
+                        filtered_lines.extend(filtered_section)
+                        filtered_lines.append('')  # Add blank line between sections
+            
+            # Start new section
+            current_section = [line]
+        elif contains_missing_info:
+            # Skip this line (missing info statement)
+            continue
+        else:
+            # Regular content line
+            if current_section:
+                current_section.append(line)
+            else:
+                filtered_lines.append(line)
+    
+    # Process last section
+    if current_section:
+        section_text = '\n'.join(current_section).lower()
+        section_lines = section_text.split('\n')
+        has_real_content = False
+        for sec_line in section_lines:
+            if sec_line.strip() and not re.match(r'^\d+\.', sec_line.strip()):
+                if not any(re.search(pattern, sec_line) for pattern in missing_info_patterns):
+                    has_real_content = True
+                    break
+        
+        if has_real_content:
+            filtered_section = []
+            for sec_line in current_section:
+                sec_line_lower = sec_line.lower().strip()
+                if not sec_line_lower or re.match(r'^\d+\.', sec_line.strip()):
+                    filtered_section.append(sec_line)
+                elif not any(re.search(pattern, sec_line_lower) for pattern in missing_info_patterns):
+                    filtered_section.append(sec_line)
+            
+            if filtered_section:
+                filtered_lines.extend(filtered_section)
+    
+    # Join and clean up multiple blank lines
+    result = '\n'.join(filtered_lines)
+    result = re.sub(r'\n{3,}', '\n\n', result)  # Replace 3+ newlines with 2
+    result = result.strip()
+    
+    return result
+
+
 def select_chunks_for_answer(chunks: List[Dict]) -> List[Dict]:
     """
     Heuristic to decide how many chunks to feed into the answer prompt.
@@ -117,157 +234,109 @@ def select_chunks_for_answer(chunks: List[Dict]) -> List[Dict]:
     return chunks[:n]
 
 
-def explain_keyword(
+def _explain_single_section(
     keyword: str,
-    selected_items: List[Dict[str, str]],
-    use_hyde: bool = True,
+    doc_id: str,
+    section_heading: Optional[str],
+    hyde_query: str,
+    doc_name_map: Dict[str, str],
+    detected_language: str,
 ) -> Dict[str, Any]:
     """
-    Generate detailed explanation for a keyword from selected documents/sections.
+    Generate explanation for a single section.
     
     Args:
-        keyword: Keyword/query to explain
-        selected_items: List of dicts with 'doc_id' and optional 'section_heading'
-        use_hyde: Whether to use HYDE query expansion
+        keyword: Original keyword query
+        doc_id: Document ID
+        section_heading: Section heading (can be None)
+        hyde_query: HYDE-expanded query
+        doc_name_map: Mapping of doc_id to document name
+        detected_language: Detected language ('english' or 'vietnamese')
     
     Returns:
-        Dict with 'explanation', 'source_chunks', 'hyde_query', 'language', etc.
+        Dict with 'explanation', 'source_chunks', 'citations', 'error', etc.
     """
     try:
-        # Step 1: HYDE query expansion (optional)
-        hyde_query = keyword
-        hyde_timing = {}
-        if use_hyde:
-            hyde_query, hyde_timing = hyde_expand_query(keyword)
+        # Get all chunks from this section
+        section_chunks = get_all_chunks_from_section(doc_id, section_heading)
         
-        # Step 2: Get all chunks from selected sections
-        # Strategy: Get ALL chunks from each selected section to avoid missing split information
-        all_chunks = []
-        chunk_ids_seen = set()
-        
-        for item in selected_items:
-            doc_id = item['doc_id']
-            section_heading = item.get('section_heading')
-            
-            # Get all chunks from this section (not just keyword matches)
-            section_chunks = get_all_chunks_from_section(doc_id, section_heading)
-            
-            # Also get keyword-matched chunks for relevance scoring
-            matched_chunks = keyword_search(hyde_query, limit=20, doc_id_filter=doc_id)
-            matched_in_section = [
-                c for c in matched_chunks 
-                if c.get('section_heading') == section_heading or 
-                   (section_heading is None and c.get('section_heading') is None)
-            ]
-            
-            # Create a relevance map from matched chunks
-            relevance_map = {c.get('chunk_id'): c.get('relevance', 0.0) for c in matched_in_section}
-            
-            # Combine section chunks with relevance scores
-            for chunk in section_chunks:
-                chunk_id = chunk.get('chunk_id')
-                if chunk_id and chunk_id not in chunk_ids_seen:
-                    # Ensure chunk has required fields
-                    chunk_with_relevance = dict(chunk)
-                    chunk_with_relevance['relevance'] = relevance_map.get(chunk_id, 0.0)
-                    chunk_with_relevance['doc_id'] = doc_id  # Ensure doc_id is present
-                    # Ensure content field exists (can be empty string but not None)
-                    if 'content' not in chunk_with_relevance:
-                        chunk_with_relevance['content'] = ''
-                    elif chunk_with_relevance.get('content') is None:
-                        chunk_with_relevance['content'] = ''
-                    all_chunks.append(chunk_with_relevance)
-                    chunk_ids_seen.add(chunk_id)
-            
-            # Add any matched chunks that weren't in section_chunks (shouldn't happen, but safety)
-            for chunk in matched_in_section:
-                chunk_id = chunk.get('chunk_id')
-                if chunk_id and chunk_id not in chunk_ids_seen:
-                    # Ensure content field exists
-                    if 'content' not in chunk:
-                        chunk['content'] = ''
-                    elif chunk.get('content') is None:
-                        chunk['content'] = ''
-                    all_chunks.append(chunk)
-                    chunk_ids_seen.add(chunk_id)
-        
-        # Sort by doc_id, section_heading, then chunk_index to maintain order
-        all_chunks.sort(key=lambda x: (
-            x.get('doc_id', ''),
-            x.get('section_heading') or '',
-            x.get('chunk_index', 0)
-        ))
-        
-        if not all_chunks:
+        if not section_chunks:
             return {
-                'explanation': 'No chunks found for the selected documents/sections.',
+                'explanation': None,
                 'source_chunks': [],
-                'hyde_query': hyde_query,
-                'language': 'english',
-                'error': None
+                'citations': {},
+                'error': f'No chunks found for section: {section_heading or "No section"}'
             }
         
-        # Step 3: Select chunks for answer
-        # Filter chunks by relevance - only include chunks that match the keyword
-        # This prevents irrelevant information from being included in the explanation
-        relevant_chunks = [c for c in all_chunks if c.get('relevance', 0.0) > 0.0]
+        # Get keyword-matched chunks for relevance scoring
+        matched_chunks = keyword_search(hyde_query, limit=20, doc_id_filter=doc_id)
+        matched_in_section = [
+            c for c in matched_chunks 
+            if c.get('section_heading') == section_heading or 
+               (section_heading is None and c.get('section_heading') is None)
+        ]
+        
+        # Create a relevance map from matched chunks
+        relevance_map = {c.get('chunk_id'): c.get('relevance', 0.0) for c in matched_in_section}
+        
+        # Combine section chunks with relevance scores
+        chunks_with_relevance = []
+        for chunk in section_chunks:
+            chunk_id = chunk.get('chunk_id')
+            if chunk_id:
+                chunk_with_relevance = dict(chunk)
+                chunk_with_relevance['relevance'] = relevance_map.get(chunk_id, 0.0)
+                chunk_with_relevance['doc_id'] = doc_id
+                if 'content' not in chunk_with_relevance or chunk_with_relevance.get('content') is None:
+                    chunk_with_relevance['content'] = ''
+                chunks_with_relevance.append(chunk_with_relevance)
+        
+        # Sort by chunk_index to maintain order
+        chunks_with_relevance.sort(key=lambda x: x.get('chunk_index', 0))
+        
+        # Filter to only relevant chunks (relevance > 0.0)
+        relevant_chunks = [c for c in chunks_with_relevance if c.get('relevance', 0.0) > 0.0]
         
         if relevant_chunks:
-            # Use only keyword-relevant chunks, sorted by relevance (descending) then by original order
-            relevant_chunks.sort(key=lambda x: (-x.get('relevance', 0.0), x.get('doc_id', ''), x.get('section_heading') or '', x.get('chunk_index', 0)))
-            selected_chunks = relevant_chunks
+            # Sort by relevance (descending), then by chunk_index
+            relevant_chunks.sort(key=lambda x: (-x.get('relevance', 0.0), x.get('chunk_index', 0)))
+            # Limit chunks per section to avoid token overflow (max 10 chunks per section)
+            selected_chunks = relevant_chunks[:10]
         else:
-            # Fallback: if no keyword matches found, use first few chunks (user selected section, so include some context)
-            # But limit to prevent too much irrelevant information
-            selected_chunks = all_chunks[:5]
+            # Fallback: use first few chunks if no keyword matches
+            selected_chunks = chunks_with_relevance[:5]
         
-        # Step 4: Get document name mapping for citations
-        docs = list_keyword_documents()
-        doc_name_map = {}
-        for doc in docs:
-            doc_id = doc.get('doc_id')
-            if not doc_id:
-                continue
-            name = doc.get('name', doc_id)
-            # Extract filename (remove path, remove .pdf extension)
-            filename = name
-            if '\\' in filename or '/' in filename:
-                filename = filename.split('\\')[-1].split('/')[-1]
-            if filename.lower().endswith('.pdf'):
-                filename = filename[:-4]
-            doc_name_map[doc_id] = filename
+        if not selected_chunks:
+            return {
+                'explanation': None,
+                'source_chunks': [],
+                'citations': {},
+                'error': f'No relevant chunks found for section: {section_heading or "No section"}'
+            }
         
-        # Step 5: Detect language
-        detected_language = detect_query_language(keyword)
-        
-        # Step 6: Build prompt with chunk context + citations
-        # IMPORTANT: Assign citation numbers sequentially (1, 2, 3...) to match source chunks display order
+        # Build prompt with chunk context + citations
         chunk_texts_with_sections = []
-        citation_map = {}  # Maps citation_number -> {doc_id, doc_name, section_heading}
+        citation_map = {}
         citation_number = 1
         
         for chunk in selected_chunks:
-            # Skip chunks without required fields
             if not chunk.get('doc_id') or chunk.get('content') is None:
                 continue
                 
-            doc_id = chunk.get('doc_id', '')
-            doc_name = doc_name_map.get(doc_id, doc_id)  # Get friendly filename
-            section_heading = chunk.get('section_heading')
+            doc_name = doc_name_map.get(doc_id, doc_id)
+            section_heading_val = chunk.get('section_heading')
             
-            # Assign sequential citation number (each chunk gets its own number)
             current_citation = citation_number
             citation_map[citation_number] = {
                 'doc_id': doc_id,
                 'doc_name': doc_name,
-                'section_heading': section_heading
+                'section_heading': section_heading_val
             }
             citation_number += 1
             
-            section_info = f" [Section: {section_heading}]" if section_heading else " [No section]"
+            section_info = f" [Section: {section_heading_val}]" if section_heading_val else " [No section]"
             content = chunk.get('content', '') or ''
             
-            # Format: [Citation Number] [Chunk from doc_name [Section: X]]
             chunk_texts_with_sections.append(
                 f"[{current_citation}] [Chunk from {doc_name}{section_info}]\n{content}"
             )
@@ -280,16 +349,17 @@ def explain_keyword(
         else:
             language_instruction = "IMPORTANT: Respond in English. Your entire answer must be in English."
         
-        # Build prompt with new structured format
+        # Build prompt (same format as before, but for single section)
         prompt = f"""Based on the following document chunks, provide a detailed explanation for: {keyword}
 
 {language_instruction}
 
 FOCUS REQUIREMENT:
 - Focus ONLY on information directly related to: {keyword}
-- If a chunk does not contain information about {keyword}, skip it or state: "This chunk does not contain information about {keyword}."
+- If a chunk does not contain information about {keyword}, SKIP IT ENTIRELY. Do NOT include it in your response.
 - Do NOT explain chunks that are irrelevant to the keyword query.
 - Only include information that is directly relevant to explaining {keyword}.
+- Do NOT include any statements about missing information such as "The document does not specify this" or "The document does not provide information about X".
 
 Note:
 - The information may be spread across multiple chunks.
@@ -311,14 +381,14 @@ OUTPUT FORMAT REQUIREMENTS:
 - After the section title, add a blank line, then write a paragraph explaining that chunk's content.
 - Each section must be separated by a blank line.
 - Do NOT combine multiple chunks into one section.
-- Only explain chunks that contain information relevant to {keyword}. Skip or briefly note chunks that are irrelevant.
+- Only explain chunks that contain information relevant to {keyword}. If a chunk is irrelevant, SKIP IT COMPLETELY - do not include it in your response at all.
 
 EXAMPLE OUTPUT FORMAT:
 1. Tank Stats
 The tank stats section displays the basic statistics of the tank. It includes the following attributes: HP, speed, rate of fire, and damage. Each statistic is presented using a progress bar.
 
-2. Tank Reference
-The document does not specify additional information regarding the tank stats in this section.
+2. Tank Customization
+The tank customization allows players to modify various aspects of their tank, including weapons, armor, and special abilities.
 
 
 STRICT RULES (NO HALLUCINATION):
@@ -333,7 +403,7 @@ STRICT RULES (NO HALLUCINATION):
 EVIDENCE REQUIREMENT:
 - Every factual claim must be directly supported by the provided chunks.
 - Do NOT rely on external knowledge or assumptions.
-- If information is missing or not stated, explicitly say: "The document does not specify this."
+- If information is missing or not stated in a chunk, SKIP THAT CHUNK entirely. Do NOT include statements like "The document does not specify this" or "The document does not provide information about X".
 
 STAT HANDLING RULE:
 - If the source content is a stat table or attribute list, only restate the values exactly as written.
@@ -357,35 +427,205 @@ Chunks:
 {chunk_texts_enhanced}
 """
 
-
-        # Step 7: Generate explanation using LLM
+        # Generate explanation using LLM with max_tokens to ensure complete responses
         try:
             provider = SimpleLLMProvider()
-            explanation = provider.llm(prompt, temperature=0.3)
+            explanation = provider.llm(prompt, temperature=0.3, max_tokens=3000)
             
-            # Post-process: No automatic references section needed
-            # The new prompt instructs LLM to use citations only in section titles
-            # and explicitly states "Do NOT add a 'References' section"
-            # So we don't add references automatically anymore
+            # Post-process: Remove statements about missing information
+            explanation = _filter_missing_info_statements(explanation)
             
+            return {
+                'explanation': explanation,
+                'source_chunks': selected_chunks,
+                'citations': citation_map,
+                'error': None
+            }
         except Exception as e:
             return {
                 'explanation': None,
                 'source_chunks': selected_chunks,
-                'hyde_query': hyde_query,
-                'language': detected_language,
+                'citations': citation_map,
                 'error': f'LLM error: {str(e)}'
             }
+    
+    except Exception as e:
+        return {
+            'explanation': None,
+            'source_chunks': [],
+            'citations': {},
+            'error': f'Error processing section: {str(e)}'
+        }
+
+
+def explain_keyword(
+    keyword: str,
+    selected_items: List[Dict[str, str]],
+    use_hyde: bool = True,
+) -> Dict[str, Any]:
+    """
+    Generate detailed explanation for a keyword from selected documents/sections.
+    Processes each section separately and combines the results.
+    
+    Args:
+        keyword: Keyword/query to explain
+        selected_items: List of dicts with 'doc_id' and optional 'section_heading'
+        use_hyde: Whether to use HYDE query expansion
+    
+    Returns:
+        Dict with 'explanation', 'source_chunks', 'hyde_query', 'language', etc.
+    """
+    try:
+        # Step 1: HYDE query expansion (optional)
+        hyde_query = keyword
+        hyde_timing = {}
+        if use_hyde:
+            hyde_query, hyde_timing = hyde_expand_query(keyword)
+        
+        # Step 2: Group selected items by unique (doc_id, section_heading) combinations
+        unique_sections = []
+        seen_sections = set()
+        
+        for item in selected_items:
+            doc_id = item['doc_id']
+            section_heading = item.get('section_heading')
+            section_key = (doc_id, section_heading)
+            
+            if section_key not in seen_sections:
+                unique_sections.append({
+                    'doc_id': doc_id,
+                    'section_heading': section_heading
+                })
+                seen_sections.add(section_key)
+        
+        if not unique_sections:
+            return {
+                'explanation': 'No sections selected.',
+                'source_chunks': [],
+                'hyde_query': hyde_query,
+                'language': 'english',
+                'error': None
+            }
+        
+        # Step 3: Get document name mapping for citations
+        docs = list_keyword_documents()
+        doc_name_map = {}
+        for doc in docs:
+            doc_id = doc.get('doc_id')
+            if not doc_id:
+                continue
+            name = doc.get('name', doc_id)
+            filename = name
+            if '\\' in filename or '/' in filename:
+                filename = filename.split('\\')[-1].split('/')[-1]
+            if filename.lower().endswith('.pdf'):
+                filename = filename[:-4]
+            doc_name_map[doc_id] = filename
+        
+        # Step 4: Detect language
+        detected_language = detect_query_language(keyword)
+        
+        # Step 5: Process each section sequentially
+        section_results = []
+        all_source_chunks = []
+        all_citations = {}
+        citation_offset = 0
+        errors = []
+        
+        # Sort sections by doc_id, then section_heading for consistent ordering
+        unique_sections.sort(key=lambda x: (x.get('doc_id', ''), x.get('section_heading') or ''))
+        
+        for section in unique_sections:
+            doc_id = section['doc_id']
+            section_heading = section.get('section_heading')
+            
+            # Process this section
+            result = _explain_single_section(
+                keyword=keyword,
+                doc_id=doc_id,
+                section_heading=section_heading,
+                hyde_query=hyde_query,
+                doc_name_map=doc_name_map,
+                detected_language=detected_language
+            )
+            
+            if result.get('error'):
+                errors.append(f"{doc_name_map.get(doc_id, doc_id)} - {section_heading or 'No section'}: {result['error']}")
+            
+            if result.get('explanation'):
+                section_results.append({
+                    'doc_id': doc_id,
+                    'section_heading': section_heading,
+                    'explanation': result['explanation'],
+                    'source_chunks': result.get('source_chunks', [])
+                })
+            
+            # Collect source chunks
+            all_source_chunks.extend(result.get('source_chunks', []))
+            
+            # Merge citations with offset to ensure unique citation numbers
+            for citation_num, citation_info in result.get('citations', {}).items():
+                all_citations[citation_offset + citation_num] = citation_info
+            citation_offset += len(result.get('citations', {}))
+        
+        # Step 6: Combine all section explanations
+        if not section_results:
+            error_msg = 'No explanations generated. '
+            if errors:
+                error_msg += 'Errors: ' + '; '.join(errors)
+            return {
+                'explanation': error_msg,
+                'source_chunks': all_source_chunks,
+                'hyde_query': hyde_query,
+                'language': detected_language,
+                'error': error_msg if errors else None
+            }
+        
+        # Combine explanations: renumber sections sequentially
+        # Use regex to find and renumber all section headers (format: "1. Section Title")
+        section_number = 1
+        combined_parts = []
+        
+        for section_result in section_results:
+            explanation_text = section_result['explanation']
+            
+            # Pattern to match section headers: number followed by period and space
+            # Example: "1. Section Title" or "2. Another Section"
+            pattern = r'^(\d+)\.\s+(.+)$'
+            
+            lines = explanation_text.split('\n')
+            processed_lines = []
+            
+            for line in lines:
+                match = re.match(pattern, line.strip())
+                if match:
+                    # This is a section header - renumber it
+                    section_title = match.group(2)
+                    processed_lines.append(f"{section_number}. {section_title}")
+                    section_number += 1
+                else:
+                    # Regular content line - keep as is
+                    processed_lines.append(line)
+            
+            # Add this section's explanation to combined parts
+            if processed_lines:
+                combined_parts.append('\n'.join(processed_lines))
+        
+        # Join all sections with double newlines
+        final_explanation = '\n\n'.join(combined_parts)
+        
+        # Post-process: Remove statements about missing information from combined explanation
+        final_explanation = _filter_missing_info_statements(final_explanation)
         
         return {
-            'explanation': explanation,
-            'source_chunks': selected_chunks,
+            'explanation': final_explanation,
+            'source_chunks': all_source_chunks,
             'hyde_query': hyde_query,
             'language': detected_language,
             'hyde_timing': hyde_timing,
-            'chunks_used': len(selected_chunks),
-            'citations': citation_map,  # Citation mapping for reference
-            'error': None
+            'chunks_used': len(all_source_chunks),
+            'citations': all_citations,
+            'error': '; '.join(errors) if errors else None
         }
     
     except Exception as e:
