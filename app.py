@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 import logging
+import signal
 
 import uuid
 import threading
@@ -811,6 +812,7 @@ def explainer_search():
         app.logger.info(f"[EXPLAINER SEARCH] Result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
         app.logger.info(f"[EXPLAINER SEARCH] Result success: {result.get('success') if isinstance(result, dict) else 'N/A'}")
         app.logger.info(f"[EXPLAINER SEARCH] Result choices count: {len(result.get('choices', [])) if isinstance(result, dict) else 'N/A'}")
+        app.logger.info(f"[EXPLAINER SEARCH] Progress messages: {result.get('progress_messages', []) if isinstance(result, dict) else 'N/A'}")
         
         app.logger.info("[EXPLAINER SEARCH] Returning JSON response")
         response = jsonify(result)
@@ -1349,6 +1351,16 @@ def log_all_routes():
 # Log routes after all are defined
 log_all_routes()
 
+# Preload WordNet for synonym generation (avoids delays during first use)
+try:
+    app.logger.info("=" * 60)
+    app.logger.info("Preloading WordNet for synonym generation...")
+    from backend.services.translation_synonym_service import preload_wordnet
+    preload_wordnet()
+    app.logger.info("=" * 60)
+except Exception as e:
+    app.logger.warning(f"WordNet preload failed (synonym generation may be slower): {e}")
+
 # Final validation - ensure app can start
 try:
     app.logger.info("=" * 60)
@@ -1372,8 +1384,24 @@ except Exception as e:
     # Don't raise - let gunicorn handle it
 
 if __name__ == '__main__':
+    # Signal handler for clean shutdown with Ctrl+C
+    def signal_handler(sig, frame):
+        print("\n\n🛑 Shutting down gracefully... (Ctrl+C pressed)")
+        print("Bye! 👋\n")
+        sys.exit(0)
+    
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     port = int(os.getenv('PORT', 5000))
     debug = os.getenv('FLASK_ENV') == 'development'
     app.logger.info(f"Starting Flask development server on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=debug)
+    app.logger.info("Press Ctrl+C to stop the server")
+    
+    try:
+        app.run(host='0.0.0.0', port=port, debug=debug, use_reloader=False)
+    except KeyboardInterrupt:
+        print("\n\n🛑 Server stopped by Ctrl+C")
+        sys.exit(0)
 

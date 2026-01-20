@@ -192,6 +192,22 @@
     to { transform: rotate(360deg); }
 }
 
+/* Progress message animation */
+.progress-message {
+    animation: fadeInProgress 0.3s ease-out;
+}
+
+@keyframes fadeInProgress {
+    from {
+        opacity: 0;
+        transform: translateY(-4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
 .scroll-area {
     overflow-y: auto;
     scrollbar-width: thin;

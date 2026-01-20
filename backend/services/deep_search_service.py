@@ -302,20 +302,25 @@ def deep_search_keyword(word: str) -> Dict[str, Any]:
         - 'all_words': List of 6 words to check
         - 'matched_keywords': List of base keywords that matched
         - 'matches_by_word': Dict showing which words matched which keywords
+        - 'progress_messages': List of progress messages
     """
+    progress_messages = []
+    
     if not word or not word.strip():
         return {
             'detected_language': 'en',
             'translation': '',
             'all_words': [],
             'matched_keywords': [],
-            'matches_by_word': {}
+            'matches_by_word': {},
+            'progress_messages': []
         }
     
     word = word.strip()
     
     # Step 1: Detect language
     detected_lang = detect_language(word)
+    progress_messages.append("Generating synonyms, searching with synonyms now")
     
     # Step 2: Generate translation and synonyms (first attempt)
     llm_result = generate_translation_and_synonyms(word, detected_lang, retry=False)
@@ -412,7 +417,8 @@ def deep_search_keyword(word: str) -> Dict[str, Any]:
                 'all_words': all_words_retry,
                 'matched_keywords': check_result_retry['matched_keywords'],
                 'matches_by_word': check_result_retry['matches_by_word'],
-                'retry_performed': True
+                'retry_performed': True,
+                'progress_messages': progress_messages
             }
     
     return {
@@ -421,6 +427,7 @@ def deep_search_keyword(word: str) -> Dict[str, Any]:
         'all_words': all_words,
         'matched_keywords': check_result['matched_keywords'],
         'matches_by_word': check_result['matches_by_word'],
-        'retry_performed': retry_performed
+        'retry_performed': retry_performed,
+        'progress_messages': progress_messages
     }
 
