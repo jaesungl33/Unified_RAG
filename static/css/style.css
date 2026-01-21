@@ -2396,16 +2396,20 @@ main {
 
 /* Language Toggle Switch */
 .switch {
-    font-size: 16px;
+    font-size: 13px;
     position: relative;
     display: inline-block;
-    width: 5em;
-    height: 40px;
+    width: 64px;
+    min-width: 64px;
+    max-width: 64px;
+    height: 36px;
     padding-top: 0;
     padding-bottom: 0;
     box-sizing: border-box;
     user-select: none;
-    vertical-align: top;
+    vertical-align: middle;
+    flex-shrink: 0;
+    margin-bottom: 4px;
 }
 
 .switch .cb {
