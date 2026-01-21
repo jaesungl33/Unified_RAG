@@ -52,36 +52,47 @@ def _extract_display_name(doc_name: str) -> str:
     return display_name
 
 
+def _update_section_chunk_id(doc_sections: Dict, key: tuple, chunk_id: str) -> None:
+    """Update section's chunk_id to keep the alphabetically lowest one."""
+    if not chunk_id:
+        return
+
+    existing_chunk_id = doc_sections[key].get('chunk_id', '')
+    if not existing_chunk_id or chunk_id < existing_chunk_id:
+        doc_sections[key]['chunk_id'] = chunk_id
+
+
+def _create_section_entry(result: Dict) -> Dict:
+    """Create a section entry from a search result."""
+    return {
+        'doc_id': result.get('doc_id'),
+        'doc_name': result.get('doc_name', 'Unknown Document'),
+        'section_heading': result.get('section_heading'),
+        'content': result.get('content', ''),
+        'relevance': result.get('relevance', 0.0),
+        'chunk_id': result.get('chunk_id', '')
+    }
+
+
 def _process_search_results(results: List[Dict], keyword: str, progress_messages: List[str] = None) -> Dict[str, Any]:
     """Process search results into the expected format."""
     doc_sections = {}
 
     for result in results:
         try:
-            doc_id = result.get('doc_id')
-            doc_name = result.get('doc_name', 'Unknown Document')
             section = result.get('section_heading')
-
             if not section or not section.strip():
                 continue
 
+            doc_id = result.get('doc_id')
+            doc_name = result.get('doc_name', 'Unknown Document')
             key = (doc_id, doc_name, section)
             chunk_id = result.get('chunk_id', '')
 
-            # If we already have this section, keep the chunk_id with lowest alphabetical order
             if key in doc_sections:
-                existing_chunk_id = doc_sections[key].get('chunk_id', '')
-                if chunk_id and (not existing_chunk_id or chunk_id < existing_chunk_id):
-                    doc_sections[key]['chunk_id'] = chunk_id
+                _update_section_chunk_id(doc_sections, key, chunk_id)
             else:
-                doc_sections[key] = {
-                    'doc_id': doc_id,
-                    'doc_name': doc_name,
-                    'section_heading': section,
-                    'content': result.get('content', ''),
-                    'relevance': result.get('relevance', 0.0),
-                    'chunk_id': chunk_id
-                }
+                doc_sections[key] = _create_section_entry(result)
         except Exception as e:
             logger.error(f"Error processing result: {e}", exc_info=True)
             continue

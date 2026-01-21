@@ -596,12 +596,12 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Render hierarchical structure
         Object.keys(groupedResults).forEach(docName => {
-            let sections = groupedResults[docName];
+            const sections = groupedResults[docName];
             
             // Sort sections alphabetically by chunk_id within each document
-            sections.sort((a, b) => {
-                const chunkIdA = a.storeItem?.chunk_id || '';
-                const chunkIdB = b.storeItem?.chunk_id || '';
+            sections.sort((sectionA, sectionB) => {
+                const chunkIdA = sectionA.storeItem?.chunk_id || '';
+                const chunkIdB = sectionB.storeItem?.chunk_id || '';
                 return chunkIdA.localeCompare(chunkIdB);
             });
             
