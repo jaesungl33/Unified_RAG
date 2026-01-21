@@ -617,11 +617,23 @@ document.addEventListener('DOMContentLoaded', function() {
         Object.keys(groupedResults).forEach(docName => {
             const sections = groupedResults[docName];
             
-            // Sort sections alphabetically by chunk_id within each document
+            // Debug: Log chunk_ids before sorting
+            console.log(`[DEBUG] Document: ${docName}, sections count: ${sections.length}`);
+            sections.forEach((s, idx) => {
+                console.log(`  [${idx}] chunk_id: "${s.storeItem?.chunk_id || 'MISSING'}", section: ${s.storeItem?.section_heading}`);
+            });
+            
+            // Sort sections by chunk_id with natural/numeric sorting (e.g., _1, _2, ..., _9, _10, _11)
             sections.sort((sectionA, sectionB) => {
                 const chunkIdA = sectionA.storeItem?.chunk_id || '';
                 const chunkIdB = sectionB.storeItem?.chunk_id || '';
-                return chunkIdA.localeCompare(chunkIdB);
+                return chunkIdA.localeCompare(chunkIdB, undefined, { numeric: true, sensitivity: 'base' });
+            });
+            
+            // Debug: Log chunk_ids after sorting
+            console.log(`[DEBUG] After sorting:`);
+            sections.forEach((s, idx) => {
+                console.log(`  [${idx}] chunk_id: "${s.storeItem?.chunk_id || 'MISSING'}", section: ${s.storeItem?.section_heading}`);
             });
             
             const docId = `doc-${hashString(docName)}`;
