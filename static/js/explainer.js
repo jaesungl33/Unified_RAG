@@ -20,11 +20,13 @@ document.addEventListener('DOMContentLoaded', function() {
     const explanationOutput = document.getElementById('explanation-output');
     const sourceChunksOutput = document.getElementById('source-chunks-output');
     const metadataOutput = document.getElementById('metadata-output');
+    const languageToggle = document.getElementById('language-toggle');
     
     // State management (replaces Gradio State)
     let storedResults = []; // Replaces explainer_search_results_store
     let lastSearchKeyword = null; // Replaces last_search_keyword
     let deepSearchContext = null; // Track deep search: { originalKeyword, selectedKeyword }
+    let selectedLanguage = 'en'; // Language preference: 'en' or 'vn'
     
     // Hierarchical view state
     let expandedDocs = new Set(); // Track which documents are expanded
@@ -143,6 +145,23 @@ document.addEventListener('DOMContentLoaded', function() {
 
     if (confirmAddAliasKeywordBtn) confirmAddAliasKeywordBtn.onclick = handleConfirmAddKeyword;
 
+    // Language toggle handler
+    if (languageToggle) {
+        languageToggle.addEventListener('change', function() {
+            selectedLanguage = this.checked ? 'vn' : 'en';
+            console.log('Language changed to:', selectedLanguage);
+            // Store in sessionStorage for persistence
+            sessionStorage.setItem('explainer_language', selectedLanguage);
+        });
+        
+        // Load saved language preference
+        const savedLanguage = sessionStorage.getItem('explainer_language');
+        if (savedLanguage) {
+            selectedLanguage = savedLanguage;
+            languageToggle.checked = savedLanguage === 'vn';
+        }
+    }
+
     // Initialize button state
     updateGenerateButtonState();
     
@@ -208,12 +227,12 @@ document.addEventListener('DOMContentLoaded', function() {
             let mergedKeys = new Set();
 
             for (const kw of searchKeywords) {
-                const response = await fetch('/api/gdd/explainer/search', {
-                    method: 'POST',
+            const response = await fetch('/api/gdd/explainer/search', {
+                method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ keyword: kw })
                 });
-                const result = await response.json();
+            const result = await response.json();
             
                 if (result.success && result.choices) {
                     result.choices.forEach((choice, idx) => {
@@ -692,8 +711,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     e.stopPropagation();
                     updateSectionSelection(sectionRow, sectionCheckbox.checked);
                     updateDocCheckboxState(docId);
-                    updateGenerateButtonState();
-                    updateSelectAllNoneState();
+                updateGenerateButtonState();
+                updateSelectAllNoneState();
                 };
                 
                 // Section title
@@ -743,7 +762,7 @@ document.addEventListener('DOMContentLoaded', function() {
         selectAllCheckbox.checked = false;
         selectNoneCheckbox.checked = false;
     }
-    
+
     // Helper functions for hierarchical view
     function hashString(str) {
         let hash = 0;
@@ -879,7 +898,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     body: JSON.stringify({
                         doc_id: docId,
                         section_heading: sectionHeading,
-                        doc_name: docName
+                        doc_name: docName,
+                        language: selectedLanguage
                     })
                 });
                 
@@ -1075,7 +1095,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 body: JSON.stringify({
                     keyword: explanationKeyword,
                     selected_choices: selectedChoices,
-                    stored_results: storedResults
+                    stored_results: storedResults,
+                    language: selectedLanguage
                 })
             });
             

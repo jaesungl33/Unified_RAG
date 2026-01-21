@@ -210,7 +210,7 @@ def search_for_explainer(keyword: str) -> Dict[str, Any]:
         )
 
 
-def generate_explanation(keyword: str, selected_choices: List[str], stored_results: List[Dict]) -> Dict[str, Any]:
+def generate_explanation(keyword: str, selected_choices: List[str], stored_results: List[Dict], language: str = 'en') -> Dict[str, Any]:
     """
     Generate explanation from selected items.
     EXACT COPY from keyword_extractor - adapted to return dict instead of Gradio components.
@@ -219,6 +219,7 @@ def generate_explanation(keyword: str, selected_choices: List[str], stored_resul
         keyword: Search keyword
         selected_choices: List of selected choice labels
         stored_results: Stored search results data
+        language: Language preference ('en' or 'vn')
 
     Returns:
         Dict with 'explanation', 'source_chunks', 'metadata', 'success'
@@ -310,7 +311,7 @@ def generate_explanation(keyword: str, selected_choices: List[str], stored_resul
 
         # Generate explanation
         result = explain_keyword(
-            keyword.strip(), selected_items, use_hyde=True)
+            keyword.strip(), selected_items, use_hyde=True, language=language)
 
         if result.get('error'):
             return {

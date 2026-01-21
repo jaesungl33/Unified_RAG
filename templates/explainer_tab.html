@@ -24,10 +24,21 @@
             </button>
         </div>
         
-        <button id="explain-btn" class="btn-primary" style="height: 40px; padding: 0 20px;" disabled>
-            <img src="{{ url_for('static', filename='icons/refresh.svg') }}" width="18" height="18" style="filter: brightness(0) invert(1); margin-right: 8px;">
-            Generate Explanation ✨
-        </button>
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <!-- Language Toggle Switch -->
+            <label class="switch" style="font-size: 14px;">
+                <input type="checkbox" id="language-toggle" class="cb" checked>
+                <span class="toggle">
+                    <span class="left">EN</span>
+                    <span class="right">VN</span>
+                </span>
+            </label>
+            
+            <button id="explain-btn" class="btn-primary" style="height: 40px; padding: 0 20px;" disabled>
+                <img src="{{ url_for('static', filename='icons/refresh.svg') }}" width="18" height="18" style="filter: brightness(0) invert(1); margin-right: 8px;">
+                Generate Explanation ✨
+            </button>
+        </div>
     </div>
 
     <div class="explainer-layout flex-1 overflow-hidden">

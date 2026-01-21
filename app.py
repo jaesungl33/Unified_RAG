@@ -30,7 +30,8 @@ JOBS_LOCK = threading.Lock()
 def new_job():
     job_id = uuid.uuid4().hex
     with JOBS_LOCK:
-        UPLOAD_JOBS[job_id] = {"status": "running", "step": "Uploading file", "message": "", "doc_id": None, "chunks_count": None}
+        UPLOAD_JOBS[job_id] = {"status": "running", "step": "Uploading file",
+                               "message": "", "doc_id": None, "chunks_count": None}
     return job_id
 
 
@@ -66,7 +67,8 @@ def run_upload_pipeline_async(job_id, pdf_bytes, filename):
         # Use GDD service's upload_and_index_document_bytes for proper GDD indexing
         # This uses MarkdownChunker and stores in keyword_chunks with proper GDD structure
         from backend.gdd_service import upload_and_index_document_bytes
-        result = upload_and_index_document_bytes(pdf_bytes, filename, progress_cb=progress_cb)
+        result = upload_and_index_document_bytes(
+            pdf_bytes, filename, progress_cb=progress_cb)
         # result is dict: {"status": "success|error", "message": "...", "doc_id": "...", ...}
         if result.get("status") == "success":
             doc_id = result.get("doc_id")
@@ -75,12 +77,15 @@ def run_upload_pipeline_async(job_id, pdf_bytes, filename):
             try:
                 from backend.storage.supabase_client import get_supabase_client
                 client = get_supabase_client()
-                result_query = client.table('keyword_chunks').select('id', count='exact').eq('doc_id', doc_id).limit(1).execute()
-                chunks_count = result_query.count if hasattr(result_query, 'count') else None
+                result_query = client.table('keyword_chunks').select(
+                    'id', count='exact').eq('doc_id', doc_id).limit(1).execute()
+                chunks_count = result_query.count if hasattr(
+                    result_query, 'count') else None
             except Exception:
                 pass  # chunks_count will remain None if query fails
-            
-            update_job(job_id, status="success", step="Completed", message=result.get("message"), doc_id=doc_id, chunks_count=chunks_count)
+
+            update_job(job_id, status="success", step="Completed", message=result.get(
+                "message"), doc_id=doc_id, chunks_count=chunks_count)
         else:
             update_job(job_id, status="error", step="Failed",
                        message=result.get("message"))
@@ -341,8 +346,10 @@ app.logger.info(f"Project root: {PROJECT_ROOT}")
 # Log PORT environment variable (critical for Render)
 port_env = os.getenv('PORT')
 default_port = 13699
-app.logger.info(f"PORT environment variable: {port_env if port_env else f'NOT SET (will use default {default_port})'}")
-app.logger.info(f"App will run on port: {int(port_env) if port_env else default_port}")
+app.logger.info(
+    f"PORT environment variable: {port_env if port_env else f'NOT SET (will use default {default_port})'}")
+app.logger.info(
+    f"App will run on port: {int(port_env) if port_env else default_port}")
 app.logger.info(f"Python version: {sys.version}")
 
 # Initialize service availability flags
@@ -956,9 +963,10 @@ def explainer_explain():
         keyword = data.get('keyword', '')
         selected_choices = data.get('selected_choices', [])
         stored_results = data.get('stored_results', [])
+        language = data.get('language', 'en')  # 'en' or 'vn'
 
         result = generate_explanation(
-            keyword, selected_choices, stored_results)
+            keyword, selected_choices, stored_results, language=language)
         return jsonify(result)
     except Exception as e:
         app.logger.error(f"Error in explainer explain: {e}")
@@ -1034,6 +1042,7 @@ def explainer_preview():
         doc_id = data.get('doc_id', '').strip()
         section_heading = data.get('section_heading', '').strip()
         doc_name = data.get('doc_name', '').strip()
+        language = data.get('language', 'en')  # 'en' or 'vn'
 
         if not doc_id:
             return jsonify({'error': 'doc_id is required', 'success': False}), 400
@@ -1080,21 +1089,25 @@ def explainer_preview():
                 section_info = f" [Section: {chunk.get('numbered_header')}]"
             elif chunk.get('section_path'):
                 section_info = f" [Section: {chunk.get('section_path')}]"
-            
+
             chunk_texts_with_sections.append(
                 f"[Chunk {i+1}]{section_info}\n{chunk['content']}"
             )
 
         chunk_texts_enhanced = "\n\n".join(chunk_texts_with_sections)
 
-        # Detect language from chunks
+        # Use provided language or detect from chunks
         detected_language = None
-        if retrieval_metrics and 'language_detection' in retrieval_metrics:
+        if language and language in ['en', 'vn']:
+            # Use provided language from toggle
+            detected_language = language
+        elif retrieval_metrics and 'language_detection' in retrieval_metrics:
+            # Fallback to auto-detection if no language provided
             lang_info = retrieval_metrics.get('language_detection', {})
             detected_language = lang_info.get('detected_language', None)
 
         # Determine response language instruction
-        if detected_language == 'vi' or detected_language == 'vietnamese':
+        if detected_language == 'vi' or detected_language == 'vn' or detected_language == 'vietnamese':
             language_instruction = "IMPORTANT: Respond in Vietnamese (Tiếng Việt). Your entire summary must be in Vietnamese."
         else:
             language_instruction = "IMPORTANT: Respond in English. Your entire summary must be in English."
@@ -1118,7 +1131,8 @@ Provide a clear, comprehensive summary of this section. Include all key informat
 
     except Exception as e:
         import traceback
-        app.logger.error(f"Error in explainer preview: {e}\n{traceback.format_exc()}")
+        app.logger.error(
+            f"Error in explainer preview: {e}\n{traceback.format_exc()}")
         return jsonify({
             'error': str(e),
             'success': False
@@ -1612,7 +1626,8 @@ if __name__ == '__main__':
     port = int(os.getenv('PORT', 13699))
     debug = os.getenv('FLASK_ENV') == 'development'
     app.logger.info(f"Starting Flask development server on port {port}")
-    app.logger.info(f"Server will be accessible at http://0.0.0.0:{port} or http://localhost:{port}")
+    app.logger.info(
+        f"Server will be accessible at http://0.0.0.0:{port} or http://localhost:{port}")
     app.logger.info("Press Ctrl+C to stop the server")
 
     try:
