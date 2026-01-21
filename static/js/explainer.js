@@ -155,6 +155,15 @@ document.addEventListener('DOMContentLoaded', function() {
     const emptyLeft = document.getElementById('explainer-empty-left');
     if (emptyLeft) emptyLeft.style.display = 'none';
     
+    // Helper function to display progress messages sequentially
+    function displayProgressMessages(messages, container) {
+        if (!messages || messages.length === 0) return;
+        
+        // Show the last progress message with spinner and animation
+        const lastMessage = messages[messages.length - 1];
+        container.innerHTML = `<div class="progress-message" style="display:flex;align-items:center;gap:8px;"><div class="spinner" style="width:14px;height:14px;"></div> <span>${lastMessage}</span></div>`;
+    }
+    
     // --- SEARCH LOGIC WITH ALIASES ---
     async function searchForExplainer() {
         const keyword = explainerKeyword.value.trim();
@@ -191,7 +200,6 @@ document.addEventListener('DOMContentLoaded', function() {
             if (foundAliasKW) {
                 console.log(`Found alias for "${keyword}" -> Primary keyword: "${foundAliasKW.name}"`);
                 searchKeywords.push(foundAliasKW.name);
-                resultsCount.innerHTML = `<div style="display:flex;align-items:center;gap:8px;"><div class="spinner" style="width:14px;height:14px;"></div> <span>Searching for "${keyword}" and "${foundAliasKW.name}"...</span></div>`;
             }
 
             // Execute search for each keyword and merge results
@@ -200,12 +208,12 @@ document.addEventListener('DOMContentLoaded', function() {
             let mergedKeys = new Set();
 
             for (const kw of searchKeywords) {
-            const response = await fetch('/api/gdd/explainer/search', {
-                method: 'POST',
+                const response = await fetch('/api/gdd/explainer/search', {
+                    method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ keyword: kw })
                 });
-            const result = await response.json();
+                const result = await response.json();
             
                 if (result.success && result.choices) {
                     result.choices.forEach((choice, idx) => {
@@ -304,10 +312,14 @@ document.addEventListener('DOMContentLoaded', function() {
             
             const deepResult = await response.json();
             
+            // Display progress messages if available
+            if (deepResult.progress_messages && deepResult.progress_messages.length > 0) {
+                displayProgressMessages(deepResult.progress_messages, resultsCount);
+            }
+            
             // Update message if retry was performed
             if (deepResult.retry_performed) {
                 console.log('Not found, retrying with different keywords...');
-                resultsCount.innerHTML = '<div style="display:flex;align-items:center;gap:8px;"><div class="spinner" style="width:14px;height:14px;"></div> <span>Not found, retrying...</span></div>';
             }
             
             if (deepResult.error) {
