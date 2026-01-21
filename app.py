@@ -1406,6 +1406,46 @@ def debug_supabase():
     return jsonify(diagnostics)
 
 
+@app.route('/api/manage/delete/gdd', methods=['POST'])
+def delete_gdd_document_route():
+    """Delete a GDD document and all its chunks"""
+    try:
+        from backend.storage.supabase_client import delete_gdd_document
+        
+        data = request.get_json()
+        doc_id = data.get('doc_id', '').strip()
+        
+        if not doc_id:
+            return jsonify({'error': 'doc_id is required'}), 400
+        
+        success = delete_gdd_document(doc_id)
+        return jsonify({'success': success})
+    except Exception as e:
+        import traceback
+        app.logger.error(f"Error deleting GDD document: {e}\n{traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/manage/delete/code', methods=['POST'])
+def delete_code_file_route():
+    """Delete a code file and all its chunks"""
+    try:
+        from backend.storage.supabase_client import delete_code_file
+        
+        data = request.get_json()
+        file_path = data.get('file_path', '').strip()
+        
+        if not file_path:
+            return jsonify({'error': 'file_path is required'}), 400
+        
+        success = delete_code_file(file_path)
+        return jsonify({'success': success})
+    except Exception as e:
+        import traceback
+        app.logger.error(f"Error deleting code file: {e}\n{traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/manage/aliases', methods=['GET'])
 def get_aliases():
     """Get all aliases grouped by keyword (Supabase)"""

@@ -8,7 +8,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const uploadStatus = document.getElementById('upload-status');
     const documentsList = document.getElementById('documents-list');
     const documentSearch = document.getElementById('document-search');
-    const toggleSidebarBtn = document.getElementById('toggle-sidebar');
     const sidebar = document.getElementById('gdd-sidebar');
     const previewPanel = document.getElementById('preview-panel');
     const closePreviewBtn = document.getElementById('close-preview');
@@ -39,13 +38,6 @@ document.addEventListener('DOMContentLoaded', function() {
     // Restore chat history
     loadChatHistory();
     
-    // Sidebar toggle
-    if (toggleSidebarBtn) {
-        toggleSidebarBtn.addEventListener('click', () => {
-            sidebar.classList.toggle('collapsed');
-        });
-    }
-
     // Close preview
     if (closePreviewBtn) {
         closePreviewBtn.addEventListener('click', () => {
@@ -76,12 +68,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Textarea auto-height
-    queryInput.addEventListener('input', function() {
-        this.style.height = 'auto';
-        this.style.height = (this.scrollHeight) + 'px';
-    });
-    
     // Search functionality
     documentSearch.addEventListener('input', function() {
         filterDocuments(this.value);
@@ -90,7 +76,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // Send query
     sendBtn.addEventListener('click', sendQuery);
     queryInput.addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
             sendQuery();
         }
     });
@@ -164,7 +151,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
 
     // Upload file
-    uploadBtn.addEventListener('click', uploadFile);
+    if (uploadBtn) {
+        uploadBtn.addEventListener('click', uploadFile);
+    }
     
     function sendQuery() {
         const query = queryInput.value.trim();
@@ -175,9 +164,9 @@ document.addEventListener('DOMContentLoaded', function() {
         // We want to send: "@section query text" (document is already selected via selected_doc)
         let queryText = query;
         if (selectedDocument && selectedDocument !== 'All Documents') {
-            // Remove the first @documentname pattern
+            // Remove the first @documentname pattern (with underscores replacing spaces)
             const docName = selectedDocument.split(' (')[0];
-            const cleanDocName = docName.replace(/[()]/g, '').trim();
+            const cleanDocName = docName.replace(/[()]/g, '').trim().replace(/\s+/g, '_');
             const docPattern = `@${cleanDocName}`;
             if (queryText.startsWith(docPattern)) {
                 queryText = queryText.substring(docPattern.length).trim();
@@ -191,7 +180,8 @@ document.addEventListener('DOMContentLoaded', function() {
         if (selectedDocument && selectedDocument !== 'All Documents') {
             // Extract document name and set input to just @documentname with space
             const docName = selectedDocument.split(' (')[0]; // Remove (doc_id) part
-            const cleanDocName = docName.replace(/[()]/g, '').trim();
+            // Use underscores for spaces to keep it as one token
+            const cleanDocName = docName.replace(/[()]/g, '').trim().replace(/\s+/g, '_');
             queryInput.value = `@${cleanDocName} `; // Add space after @filename
         } else {
             queryInput.value = '';
@@ -306,6 +296,12 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(data => {
                 // Store all documents data for filtering
                 allDocumentsData = data;
+                
+                // Update document count
+                const docCount = document.getElementById('doc-count');
+                if (docCount && data.documents) {
+                    docCount.textContent = `(${data.documents.length})`;
+                }
                 
                 // Render documents (will apply current search filter)
                 renderDocuments(data);
@@ -496,13 +492,26 @@ document.addEventListener('DOMContentLoaded', function() {
                         return;
                     }
                     if (e.target.closest('.delete-trigger')) {
-                        // Global delete handler from manage.js would be ideal but we need to keep it local if not available
+                        e.preventDefault();
+                        e.stopPropagation();
                         if (confirm('Delete this document?')) {
                             fetch('/api/manage/delete/gdd', {
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
                                 body: JSON.stringify({ doc_id: doc.doc_id })
-                            }).then(() => loadDocuments());
+                            })
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.error) {
+                                    alert('Error deleting document: ' + data.error);
+                                } else {
+                                    loadDocuments();
+                                }
+                            })
+                            .catch(error => {
+                                console.error('Delete failed:', error);
+                                alert('Error deleting document: ' + error.message);
+                            });
                         }
                         return;
                     }
@@ -600,12 +609,17 @@ document.addEventListener('DOMContentLoaded', function() {
         
         isUpdatingFromSelection = true;
         const currentValue = queryInput.value;
-        const queryParts = currentValue.split(/\s+/);
-        const queryText = queryParts.filter(part => !part.startsWith('@')).join(' ');
+        
+        // Remove ALL existing @patterns from the input (handles names with spaces)
+        // Match @followed by non-whitespace characters OR @followed by text until the next @ or end
+        let queryText = currentValue.replace(/@[^\s@]+/g, '').trim();
+        // Clean up any extra spaces
+        queryText = queryText.replace(/\s+/g, ' ').trim();
         
         if (selectedDocument && selectedDocument !== 'All Documents') {
             const docName = selectedDocument.split(' (')[0];
-            const cleanDocName = docName.replace(/[()]/g, '').trim();
+            // Replace spaces with underscores for the @mention to keep it as one token
+            const cleanDocName = docName.replace(/[()]/g, '').trim().replace(/\s+/g, '_');
             queryInput.value = `@${cleanDocName} ${queryText}`.trim();
             if (selectedDocHint) selectedDocHint.textContent = `Targeting: ${docName}`;
         } else {
@@ -941,46 +955,24 @@ document.addEventListener('DOMContentLoaded', function() {
             e.stopPropagation();
             try {
                 localStorage.removeItem(CHAT_STORAGE_KEY);
-            } catch (e) {
-                console.error('Failed to clear GDD chat history:', e);
+            } catch (err) {
+                console.error('Failed to clear GDD chat history:', err);
             }
-            // Get welcome message BEFORE clearing (if it exists)
-            const welcome = document.getElementById('gdd-welcome-message');
-            let welcomeClone = null;
-            
-            if (welcome) {
-                // Clone the welcome message before clearing
-                welcomeClone = welcome.cloneNode(true);
-            }
-            
-            // Clear chat container
+            // Clear chat container and restore welcome message
             chatContainer.innerHTML = '';
-            
-            // Restore welcome message
-            if (welcomeClone) {
-                welcomeClone.id = 'gdd-welcome-message';
-                welcomeClone.style.display = 'flex';
-                chatContainer.appendChild(welcomeClone);
-            } else {
-                // Fallback: recreate welcome message if it doesn't exist
-                const fallback = document.createElement('div');
-                fallback.id = 'gdd-welcome-message';
-                fallback.style.display = 'flex';
-                fallback.style.flexDirection = 'column';
-                fallback.style.alignItems = 'center';
-                fallback.style.textAlign = 'center';
-                fallback.style.padding = '60px 0';
-                fallback.innerHTML = `
-                    <div style="width: 48px; height: 48px; background: var(--muted); border-radius: 12px; display: flex; align-items: center; justify-content: center; margin-bottom: 16px;">
-                        <img src="/static/icons/chat.svg" width="24" height="24" opacity="0.5">
+            const welcome = document.createElement('div');
+            welcome.className = 'message bot-message';
+            welcome.id = 'gdd-welcome-message';
+            welcome.innerHTML = `
+                <div style="display: flex; flex-direction: column; align-items: center; text-align: center; padding: 40px 0;">
+                    <div class="icon-box" style="width: 48px; height: 48px; background: #EEF2FF; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 16px;">
+                        <img src="/static/icons/file.svg" width="24" height="24" style="filter: invert(26%) sepia(89%) saturate(1583%) hue-rotate(217deg) brightness(96%) contrast(93%);">
                     </div>
-                    <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 8px;">GDD RAG Chatbot</h3>
-                    <p style="color: var(--muted-foreground); font-size: 0.875rem; max-width: 320px;">
-                        Ask questions about your documents. Use <span style="color: var(--primary); font-family: var(--font-mono);">@document</span> for specific files.
-                    </p>
-                `;
-                chatContainer.appendChild(fallback);
-            }
+                    <h3 style="margin-bottom: 8px;">GDD RAG Assistant</h3>
+                    <p style="color: var(--text-muted); max-width: 400px;">Ask questions about your documents. Use <span style="color: var(--primary); font-family: var(--font-mono);">@document</span> to target specific files.</p>
+                </div>
+            `;
+            chatContainer.appendChild(welcome);
         });
     }
 
