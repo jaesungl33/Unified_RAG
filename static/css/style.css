@@ -2786,3 +2786,24 @@ main {
     transform: rotateX(10deg) rotateY(0deg);
     color: #487bdb;
 }
+
+/* Citation styling for in-text citations */
+.explanation-output .generated-explanation {
+    line-height: 1.6;
+}
+
+/* Circled numbers for citations (Unicode circled numbers ①-⑳) */
+.explanation-output .generated-explanation {
+    font-variant-numeric: normal;
+}
+
+/* Ensure proper spacing for citations */
+.explanation-output .generated-explanation sup,
+.explanation-output .generated-explanation .citation {
+    font-size: 0.85em;
+    vertical-align: super;
+    margin-left: 2px;
+    line-height: 0;
+    position: relative;
+    top: -0.3em;
+}

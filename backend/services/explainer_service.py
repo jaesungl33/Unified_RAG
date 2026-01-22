@@ -81,6 +81,42 @@ def get_all_chunks_from_section(doc_id: str, section_heading: str) -> List[Dict[
     return result.data if result.data else []
 
 
+def _add_citation_to_text(text: str, citation_number: int) -> str:
+    """
+    Add a citation number to the end of every paragraph in the text.
+
+    Args:
+        text: Explanation text
+        citation_number: Citation number to add (1, 2, 3...)
+
+    Returns:
+        Text with citations added to the end of each paragraph
+    """
+    if not text:
+        return text
+
+    # Convert citation number to circled number
+    if 1 <= citation_number <= 20:
+        citation = chr(0x2460 + citation_number - 1)  # ①-⑳
+    else:
+        citation = f"({citation_number})"
+
+    # Split text into paragraphs (double newline)
+    paragraphs = text.split('\n\n')
+    cited_paragraphs = []
+
+    for para in paragraphs:
+        if not para.strip():
+            cited_paragraphs.append(para)
+            continue
+
+        # Remove trailing whitespace and add citation at the end of the paragraph
+        para = para.rstrip()
+        cited_paragraphs.append(para + f" {citation}")
+
+    return '\n\n'.join(cited_paragraphs)
+
+
 def _filter_missing_info_statements(text: str) -> str:
     """
     Remove statements about missing information from the explanation.
@@ -322,31 +358,35 @@ def _explain_single_section(
                 'error': f'No relevant chunks found for section: {section_heading or "No section"}'
             }
 
-        # Build prompt with chunk context + citations
+        # Build prompt with chunk context
+        # Sort chunks by chunk_id to match sidebar order (alphanumeric)
+        selected_chunks_sorted = sorted(
+            selected_chunks, key=lambda x: x.get('chunk_id', '') or '')
+
         chunk_texts_with_sections = []
         citation_map = {}
-        citation_number = 1
 
-        for chunk in selected_chunks:
+        for chunk in selected_chunks_sorted:
             if not chunk.get('doc_id') or chunk.get('content') is None:
                 continue
 
             doc_name = doc_name_map.get(doc_id, doc_id)
             section_heading_val = chunk.get('section_heading')
+            chunk_id = chunk.get('chunk_id', '')
 
-            current_citation = citation_number
-            citation_map[citation_number] = {
+            # Store citation info (will be set by caller)
+            citation_map[chunk_id] = {
                 'doc_id': doc_id,
                 'doc_name': doc_name,
-                'section_heading': section_heading_val
+                'section_heading': section_heading_val,
+                'chunk_id': chunk_id
             }
-            citation_number += 1
 
             section_info = f" [Section: {section_heading_val}]" if section_heading_val else " [No section]"
             content = chunk.get('content', '') or ''
 
             chunk_texts_with_sections.append(
-                f"[{current_citation}] [Chunk from {doc_name}{section_info}]\n{content}"
+                f"[Chunk from {doc_name}{section_info}]\n{content}"
             )
 
         chunk_texts_enhanced = "\n\n".join(chunk_texts_with_sections)
@@ -554,22 +594,45 @@ def explain_keyword(
             # Auto-detect from keyword
             detected_language = detect_query_language(keyword)
 
-        # Step 5: Process each section sequentially
-        section_results = []
-        all_source_chunks = []
-        all_citations = {}
-        citation_offset = 0
-        errors = []
-        section_timings = []
-
-        # Sort sections by doc_id, then section_heading for consistent ordering
-        unique_sections.sort(key=lambda x: (
-            x.get('doc_id', ''), x.get('section_heading') or ''))
-
+        # Step 5: Collect all chunks from all sections and sort by chunk_id
+        # This ensures we process sections in sidebar order
+        all_chunks_global = []
         for section in unique_sections:
             doc_id = section['doc_id']
             section_heading = section.get('section_heading')
+            section_chunks = get_all_chunks_from_section(
+                doc_id, section_heading)
+            for chunk in section_chunks:
+                chunk['_doc_id'] = doc_id
+                chunk['_section_heading'] = section_heading
+                all_chunks_global.append(chunk)
 
+        # Sort all chunks globally by chunk_id to match sidebar order
+        all_chunks_global.sort(key=lambda x: x.get('chunk_id', '') or '')
+
+        # Step 6: Process each section sequentially, adding citations as we go
+        section_results = []
+        all_source_chunks = []
+        all_citations = {}
+        errors = []
+        section_timings = []
+        citation_counter = 1  # Global counter for citations
+
+        # Group chunks by (doc_id, section_heading) to process sections
+        chunks_by_section = {}
+        for chunk in all_chunks_global:
+            doc_id = chunk.get('_doc_id')
+            section_heading = chunk.get('_section_heading')
+            section_key = (doc_id, section_heading)
+            if section_key not in chunks_by_section:
+                chunks_by_section[section_key] = []
+            chunks_by_section[section_key].append(chunk)
+
+        # Process sections in order (sorted by first chunk's chunk_id in each section)
+        sorted_sections = sorted(chunks_by_section.items(),
+                                 key=lambda x: x[1][0].get('chunk_id', '') or '' if x[1] else '')
+
+        for (doc_id, section_heading), section_chunks in sorted_sections:
             # Process this section
             result = _explain_single_section(
                 keyword=keyword,
@@ -585,12 +648,30 @@ def explain_keyword(
                     f"{doc_name_map.get(doc_id, doc_id)} - {section_heading or 'No section'}: {result['error']}")
 
             if result.get('explanation'):
+                # Add citation to this section's explanation
+                explanation_with_citation = _add_citation_to_text(
+                    result['explanation'], citation_counter)
+
+                # Build citation map for this section (use first chunk for citation info)
+                source_chunks = result.get('source_chunks', [])
+                if source_chunks:
+                    first_chunk = source_chunks[0]
+                    all_citations[citation_counter] = {
+                        'doc_id': doc_id,
+                        'doc_name': doc_name_map.get(doc_id, doc_id),
+                        'section_heading': first_chunk.get('section_heading'),
+                        'chunk_id': first_chunk.get('chunk_id', '')
+                    }
+
                 section_results.append({
                     'doc_id': doc_id,
                     'section_heading': section_heading,
-                    'explanation': result['explanation'],
-                    'source_chunks': result.get('source_chunks', [])
+                    'explanation': explanation_with_citation,
+                    'source_chunks': source_chunks
                 })
+
+                # Increment citation counter for next LLM call
+                citation_counter += 1
 
             # Collect section timing if available
             if result.get('section_timing') is not None and result.get('section_label'):
@@ -601,11 +682,6 @@ def explain_keyword(
 
             # Collect source chunks
             all_source_chunks.extend(result.get('source_chunks', []))
-
-            # Merge citations with offset to ensure unique citation numbers
-            for citation_num, citation_info in result.get('citations', {}).items():
-                all_citations[citation_offset + citation_num] = citation_info
-            citation_offset += len(result.get('citations', {}))
 
         # Step 6: Combine all section explanations
         if not section_results:
