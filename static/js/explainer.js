@@ -1408,6 +1408,169 @@ document.addEventListener('DOMContentLoaded', function () {
         closePreviewBtn.addEventListener('click', closePreviewPanel);
     }
 
+    // Document Viewer Sidebar functions
+    const documentViewerSidebar = document.getElementById('document-viewer-sidebar');
+    const previewFullDocBtn = document.getElementById('preview-full-doc-btn');
+    const closeDocumentViewerBtn = document.getElementById('close-document-viewer-btn');
+
+    async function openDocumentViewer() {
+        if (!documentViewerSidebar) return;
+
+        // Get doc_id from the active preview
+        let docId = null;
+        let docName = 'Document';
+
+        if (activePreviewId) {
+            // Find the section row with the active preview ID
+            const activeRow = document.querySelector(`[data-section-id="${activePreviewId}"]`);
+            if (activeRow) {
+                // Get the index from the row
+                const index = parseInt(activeRow.dataset.index);
+
+                // Get the real doc_id from storedResults using the index
+                // This matches how togglePreview() gets doc_id from item.storeItem.doc_id
+                if (!isNaN(index) && storedResults && storedResults[index]) {
+                    docId = storedResults[index].doc_id;
+                }
+
+                // Get doc name from preview panel header
+                const previewDocNameEl = document.getElementById('preview-doc-name');
+                if (previewDocNameEl) {
+                    docName = previewDocNameEl.textContent;
+                }
+            }
+        }
+
+        if (!docId) {
+            console.warn('[Document Viewer] No doc_id found for active preview');
+            // Still open the sidebar but show error message
+            documentViewerSidebar.style.transform = 'translateX(0)';
+            if (previewFullDocBtn) {
+                previewFullDocBtn.classList.add('active');
+            }
+            const content = document.getElementById('document-viewer-content');
+            if (content) {
+                content.innerHTML = `
+                    <div class="placeholder-text" style="text-align: center; padding: 32px;">
+                        <p style="color: var(--status-error);">No document selected for preview.</p>
+                    </div>
+                `;
+            }
+            return;
+        }
+
+        // Update document name in sidebar
+        const docNameEl = document.getElementById('document-viewer-doc-name');
+        if (docNameEl) {
+            docNameEl.textContent = docName;
+        }
+
+        // Show loading state
+        const content = document.getElementById('document-viewer-content');
+        if (content) {
+            content.style.display = 'flex';
+            content.style.alignItems = 'center';
+            content.style.justifyContent = 'center';
+            content.innerHTML = `
+                <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px; gap: 12px;">
+                    <div class="spinner" style="width: 24px; height: 24px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+                    <p style="font-size: 0.875rem; color: var(--muted-foreground); margin: 0;">Loading document...</p>
+                </div>
+            `;
+        }
+
+        // Open the sidebar
+        documentViewerSidebar.style.transform = 'translateX(0)';
+        if (previewFullDocBtn) {
+            previewFullDocBtn.classList.add('active');
+        }
+
+        // Fetch PDF URL
+        try {
+            const response = await fetch('/api/gdd/explainer/get-pdf-url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ doc_id: docId })
+            });
+
+            const result = await response.json();
+
+            if (result.success && result.pdf_url) {
+                // Display PDF in iframe - ensure it takes full height
+                if (content) {
+                    content.style.display = 'block';
+                    content.style.alignItems = 'stretch';
+                    content.style.justifyContent = 'stretch';
+                    content.innerHTML = `
+                        <iframe src="${result.pdf_url}" width="100%" height="100%" style="border: none; display: block; flex: 1; min-height: 0;"></iframe>
+                    `;
+                }
+            } else {
+                // Show error message
+                if (content) {
+                    content.style.display = 'flex';
+                    content.style.alignItems = 'center';
+                    content.style.justifyContent = 'center';
+                    content.innerHTML = `
+                        <div class="placeholder-text" style="text-align: center; padding: 32px;">
+                            <p style="color: var(--status-error); margin-bottom: 12px;">No PDF found for this document.</p>
+                            <p style="color: var(--muted-foreground); font-size: 0.875rem;">${result.error || 'The document PDF is not available in Supabase Storage.'}</p>
+                        </div>
+                    `;
+                }
+            }
+        } catch (error) {
+            console.error('Error fetching document PDF:', error);
+            if (content) {
+                content.style.display = 'flex';
+                content.style.alignItems = 'center';
+                content.style.justifyContent = 'center';
+                content.innerHTML = `
+                    <div class="placeholder-text" style="text-align: center; padding: 32px;">
+                        <p style="color: var(--status-error);">Error: ${error.message || 'Failed to load document'}</p>
+                    </div>
+                `;
+            }
+        }
+    }
+
+    function closeDocumentViewer() {
+        if (documentViewerSidebar) {
+            documentViewerSidebar.style.transform = 'translateX(100%)';
+            if (previewFullDocBtn) {
+                previewFullDocBtn.classList.remove('active');
+            }
+        }
+    }
+
+    // Initialize document viewer buttons
+    if (previewFullDocBtn) {
+        previewFullDocBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (documentViewerSidebar && documentViewerSidebar.style.transform === 'translateX(0)') {
+                closeDocumentViewer();
+            } else {
+                openDocumentViewer();
+            }
+        });
+    }
+
+    if (closeDocumentViewerBtn) {
+        closeDocumentViewerBtn.addEventListener('click', closeDocumentViewer);
+    }
+
+    // Close document viewer when clicking outside
+    document.addEventListener('click', (e) => {
+        if (documentViewerSidebar && documentViewerSidebar.style.transform === 'translateX(0)') {
+            const isInsideViewer = documentViewerSidebar.contains(e.target);
+            const isButton = previewFullDocBtn && previewFullDocBtn.contains(e.target);
+
+            if (!isInsideViewer && !isButton) {
+                closeDocumentViewer();
+            }
+        }
+    });
+
     function handleSelectAll() {
         if (selectAllCheckbox.checked) {
             selectNoneCheckbox.checked = false;
