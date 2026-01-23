@@ -1546,17 +1546,20 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
             }
 
+            const requestBody = JSON.stringify({
+                keyword: explanationKeyword,
+                selected_keywords: selectedKeywords,
+                selected_choices: selectedChoices,
+                stored_results: storedResults,
+                language: selectedLanguage
+            });
+
+            // Note: Don't use keepalive for large payloads (>64KB limit)
+            // The body size can exceed 64KB with many results
             const response = await fetch('/api/gdd/explainer/explain', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    keyword: explanationKeyword,
-                    selected_keywords: selectedKeywords,
-                    selected_choices: selectedChoices,
-                    stored_results: storedResults,
-                    language: selectedLanguage
-                }),
-                keepalive: true // Allow request to complete even after page navigation
+                body: requestBody
             });
 
             const result = await response.json();

@@ -953,6 +953,8 @@ def explainer_search_stream():
 @app.route('/api/gdd/explainer/explain', methods=['POST'])
 def explainer_explain():
     """Generate explanation from selected items"""
+    app.logger.info("=" * 80)
+    app.logger.info("[EXPLAINER EXPLAIN] Endpoint called")
     try:
         from backend.gdd_explainer import generate_explanation
 
@@ -962,11 +964,14 @@ def explainer_explain():
         stored_results = data.get('stored_results', [])
         language = data.get('language', 'en')  # 'en' or 'vn'
 
+        app.logger.info(f"[EXPLAINER EXPLAIN] keyword='{keyword}', choices={len(selected_choices)}, results={len(stored_results)}, lang={language}")
+
         result = generate_explanation(
             keyword, selected_choices, stored_results, language=language)
+        app.logger.info(f"[EXPLAINER EXPLAIN] Generation complete, success={result.get('success', False)}")
         return jsonify(result)
     except Exception as e:
-        app.logger.error(f"Error in explainer explain: {e}")
+        app.logger.error(f"[EXPLAINER EXPLAIN] Error: {e}")
         import traceback
         app.logger.error(traceback.format_exc())
         return jsonify({
