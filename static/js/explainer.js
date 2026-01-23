@@ -266,6 +266,20 @@ document.addEventListener('DOMContentLoaded', function () {
                 const emptyLeft = document.getElementById('explainer-empty-left');
                 if (emptyLeft) emptyLeft.style.display = 'none';
 
+                // Update results count displays
+                const resultsCountNumber = document.getElementById('results-count-number');
+                if (resultsCountNumber) resultsCountNumber.textContent = storedResults.length.toString();
+                if (resultsCount) {
+                    resultsCount.textContent = `Found ${storedResults.length} result(s)`;
+                    resultsCount.style.color = "var(--muted-foreground)";
+                    resultsCount.style.display = 'block';
+                }
+
+                // Show query filter container if translation info exists
+                if (queryFilterContainer && translationInfo && translationInfo.original) {
+                    queryFilterContainer.style.display = 'flex';
+                }
+
                 // Convert storedResults back to choice labels (format: "docName → section")
                 // renderCheckboxes expects an array of choice label strings, not storedResults objects
                 const choiceLabels = storedResults.map(item => {
@@ -277,17 +291,22 @@ document.addEventListener('DOMContentLoaded', function () {
                 renderCheckboxes(choiceLabels);
                 applyQueryFilter();
 
-                // Restore expanded documents
-                expandedDocs.forEach(docId => {
-                    const sectionsContainer = document.getElementById(`sections-${docId}`);
-                    if (sectionsContainer) {
-                        sectionsContainer.classList.add('expanded');
-                        const chevron = document.querySelector(`[data-doc-id="${docId}"] .doc-row-chevron`);
-                        if (chevron) {
-                            chevron.classList.add('expanded');
+                // Restore expanded documents after render
+                setTimeout(() => {
+                    expandedDocs.forEach(docId => {
+                        const sectionsContainer = document.getElementById(`sections-${docId}`);
+                        const docRow = document.querySelector(`.doc-row[data-doc-id="${docId}"]`);
+                        if (sectionsContainer) {
+                            sectionsContainer.classList.add('expanded');
                         }
-                    }
-                });
+                        if (docRow) {
+                            const chevron = docRow.querySelector('.doc-row-chevron');
+                            if (chevron) {
+                                chevron.classList.add('expanded');
+                            }
+                        }
+                    });
+                }, 50);
 
                 // Restore selected checkboxes based on stored selectedChoices
                 if (state.selectedChoices && state.selectedChoices.length > 0) {
@@ -303,14 +322,18 @@ document.addEventListener('DOMContentLoaded', function () {
                         });
                     });
 
-                    // Update document checkbox states
-                    const allDocIds = new Set();
+                    // Update document checkbox states (use doc_name to compute frontend docId)
+                    const allDocNames = new Set();
                     storedResults.forEach(item => {
-                        if (item.doc_id) allDocIds.add(item.doc_id);
+                        if (item.doc_name) allDocNames.add(item.doc_name);
                     });
-                    allDocIds.forEach(docId => {
+                    allDocNames.forEach(docName => {
+                        const docId = `doc-${hashString(docName)}`;
                         updateDocCheckboxState(docId);
                     });
+
+                    // Update select all/none state and selected count badge
+                    updateSelectAllNoneState();
                 }
 
                 // Restore explanation output if it exists
@@ -319,6 +342,11 @@ document.addEventListener('DOMContentLoaded', function () {
                     explanationOutput.style.display = 'block';
                     // If explanation exists, generation is no longer in progress
                     generationInProgress = false;
+
+                    // Re-attach citation click handlers
+                    setTimeout(() => {
+                        setupCitationClickHandlers();
+                    }, 100);
                 }
             }
 
