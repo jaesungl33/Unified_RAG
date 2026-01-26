@@ -560,6 +560,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     async function searchForExplainer() {
         const keyword = explainerKeyword.value.trim();
+        const emptyLeft = getElement('explainer-empty-left');
 
         if (!keyword) {
             if (queryFilterContainer) {

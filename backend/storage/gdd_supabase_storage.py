@@ -852,6 +852,32 @@ def index_gdd_chunks_to_supabase(
             pdf_storage_path=pdf_storage_path  # Store PDF storage path
         )
         
+        # Extract and store metadata from first chunks
+        try:
+            from backend.services.gdd_metadata_extractor import extract_metadata_from_chunks
+            from backend.storage.keyword_storage import update_document_metadata
+            
+            # Get first 3 chunks (sorted by chunk_index if available)
+            first_chunks = sorted(chunks, key=lambda c: c.get('chunk_index', 0))[:3] if chunks else []
+            
+            if first_chunks:
+                metadata = extract_metadata_from_chunks(first_chunks)
+                
+                # Update document with extracted metadata (handles null cases)
+                update_document_metadata(
+                    doc_id=doc_id,
+                    version=metadata.get('version'),
+                    author=metadata.get('author'),
+                    date=metadata.get('date')
+                )
+                
+                logger.info(f"Extracted metadata for {doc_id}: version={metadata.get('version')}, author={metadata.get('author')}, date={metadata.get('date')}")
+        except Exception as e:
+            # Log error but don't fail the indexing - metadata extraction is optional
+            logger.warning(f"Failed to extract metadata for {doc_id}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+        
         # Report any failed chunks before insertion
         if failed_chunks:
             logger.error(f"CRITICAL: {len(failed_chunks)} chunks failed embedding for document {doc_id}:")
