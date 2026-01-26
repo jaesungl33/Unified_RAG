@@ -45,7 +45,7 @@ def extract_metadata_from_text(text: str) -> Dict[str, Optional[str]]:
     # But keep the original for final extraction
     normalized_text = re.sub(r'\s+', ' ', text)
     
-    # Pattern for Version: "Version: v1.1" or "Phiên bản: v1.1"
+    # Pattern for Version: "Version: v1.1", "Phiên bản: v1.1", or "Phiên bản mới nhất: v1.1"
     # Handle cases with/without spaces: "Phiên bản:" or "Phiênbản:"
     # Handle newlines between label and colon: "Phiênbản\n\n:v1.1"
     # Case-insensitive, handles various formats and newlines
@@ -54,6 +54,9 @@ def extract_metadata_from_text(text: str) -> Dict[str, Optional[str]]:
         # \s matches any whitespace including newlines
         r'Version\s*:\s*(v?\d+\.?\d*(?:\.\d+)?)',
         r'Version\s+(v?\d+\.?\d*(?:\.\d+)?)',
+        # Vietnamese: "Phiên bản mới nhất: v1.1" - newest version
+        r'Phiên\s*bản\s*mới\s*nhất\s*:\s*(v?\d+\.?\d*(?:\.\d+)?)',
+        r'Phiên\s*bản\s*mới\s*nhất\s+(v?\d+\.?\d*(?:\.\d+)?)',
         # Vietnamese: "Phiên bản: v1.1", "Phiênbản: v1.1"
         # Make space optional between "Phiên" and "bản", and handle newlines before colon
         r'Phiên\s*bản\s*:\s*(v?\d+\.?\d*(?:\.\d+)?)',
@@ -67,24 +70,27 @@ def extract_metadata_from_text(text: str) -> Dict[str, Optional[str]]:
             metadata['version'] = match.group(1).strip()
             break
     
-    # Pattern for Author: "Người viết:", "Người tạo:", or "Người tạo file:"
+    # Pattern for Author: "Người viết:", "Người tạo:", "Người tạo file:", or "Người soạn:"
     # Handle cases with/without spaces: "Người viết:" or "Ngườiviết:"
     # Extract ALL authors from the content between author title and date title
     # Handles list format: "- [x] phucth12\nthanhdv2\nlinhttd"
     # Examples:
     # - "Người viết: phucth12" (single author)
+    # - "Người soạn: Kent" (single author)
     # - "Ngườiviết:\n- [x] phucth12\nthanhdv2\nlinhttd" (multiple authors, list format)
     # - "Người viết: phucth12 (phucth12)" (with duplicate in parens)
     # - "Người tạo: QuocTA" (mixed case usernames)
     # - "Người tạo file: Kent (QuocTA)" (author with parentheses alias)
     # The username appears to be alphanumeric + underscore
     author_patterns = [
+        # "Người soạn:" - capture everything until date title (with or without spaces)
+        r'Người\s*soạn\s*:\s*([\s\S]*?)(?=\s*Ngày\s*(tạo|cập\s*nhật|khởi\s*tạo)|\s*\||\s*$)',
         # "Người viết:" - capture everything until date title (with or without spaces)
-        r'Người\s*viết\s*:\s*([\s\S]*?)(?=\s*Ngày\s*(tạo|cập\s*nhật)|\s*\||\s*$)',
+        r'Người\s*viết\s*:\s*([\s\S]*?)(?=\s*Ngày\s*(tạo|cập\s*nhật|khởi\s*tạo)|\s*\||\s*$)',
         # "Người tạo file:" - capture everything until date title
-        r'Người\s*tạo\s*file\s*:\s*([\s\S]*?)(?=\s*Ngày\s*(tạo|cập\s*nhật)|\s*\||\s*$)',
+        r'Người\s*tạo\s*file\s*:\s*([\s\S]*?)(?=\s*Ngày\s*(tạo|cập\s*nhật|khởi\s*tạo)|\s*\||\s*$)',
         # "Người tạo:" - capture everything until date title
-        r'Người\s*tạo\s*:\s*([\s\S]*?)(?=\s*Ngày\s*(tạo|cập\s*nhật)|\s*\||\s*$)',
+        r'Người\s*tạo\s*:\s*([\s\S]*?)(?=\s*Ngày\s*(tạo|cập\s*nhật|khởi\s*tạo)|\s*\||\s*$)',
     ]
     
     for pattern in author_patterns:
@@ -149,27 +155,34 @@ def extract_metadata_from_text(text: str) -> Dict[str, Optional[str]]:
                 metadata['author'] = ', '.join(authors)
                 break
     
-    # Pattern for Date: "Ngày tạo:", "Ngày tạo file:", or "Ngày cập nhật:" followed by date
+    # Pattern for Date: "Ngày tạo:", "Ngày tạo file:", "Ngày cập nhật:", or "Ngày khởi tạo:"
     # Handle cases with/without spaces: "Ngày tạo:" or "Ngàytạo:"
     # Handle newlines between label and colon: "Ngàytạo\n\n:07-09-2025"
-    # Formats: "28 - 07 - 2025", "28/07/2025", "28-07-2025", "28.07.2025", "09-09-2025"
+    # Formats: "28 - 07 - 2025", "28/07/2025", "28-07-2025", "28.07.2025", "09-09-2025", "21 - 08 - 2025"
     # Handles newlines: "Ngày tạo:\n28 - 07 - 2025"
     date_patterns = [
+        # "Ngày khởi tạo:" - with or without spaces, handle "21 - 08 - 2025" format
+        r'Ngày\s*khởi\s*tạo\s*:\s*(\d{1,2}\s*-\s*\d{1,2}\s*-\s*\d{4})',
         # "Ngày tạo:" - with or without spaces, handle "09-09-2025" format
         r'Ngày\s*tạo\s*:\s*(\d{1,2}\s*-\s*\d{1,2}\s*-\s*\d{4})',
         # "Ngày tạo file:" - with or without spaces
         r'Ngày\s*tạo\s*file\s*:\s*(\d{1,2}\s*-\s*\d{1,2}\s*-\s*\d{4})',
         # "Ngày cập nhật:" - with or without spaces
         r'Ngày\s*cập\s*nhật\s*:\s*(\d{1,2}\s*-\s*\d{1,2}\s*-\s*\d{4})',
+        # "Ngày khởi tạo:" - handle "21/08/2025" or "21-08-2025" format (no spaces in date)
+        r'Ngày\s*khởi\s*tạo\s*:\s*(\d{1,2}[-/]\d{1,2}[-/]\d{4})',
         # "Ngày tạo:" - handle "09/09/2025" or "09-09-2025" format (no spaces in date)
         r'Ngày\s*tạo\s*:\s*(\d{1,2}[-/]\d{1,2}[-/]\d{4})',
         r'Ngày\s*tạo\s*file\s*:\s*(\d{1,2}[-/]\d{1,2}[-/]\d{4})',
         r'Ngày\s*cập\s*nhật\s*:\s*(\d{1,2}[-/]\d{1,2}[-/]\d{4})',
+        # "Ngày khởi tạo:" - handle "21.08.2025" format
+        r'Ngày\s*khởi\s*tạo\s*:\s*(\d{1,2}\.\d{1,2}\.\d{4})',
         # "Ngày tạo:" - handle "09.09.2025" format
         r'Ngày\s*tạo\s*:\s*(\d{1,2}\.\d{1,2}\.\d{4})',
         r'Ngày\s*tạo\s*file\s*:\s*(\d{1,2}\.\d{1,2}\.\d{4})',
         r'Ngày\s*cập\s*nhật\s*:\s*(\d{1,2}\.\d{1,2}\.\d{4})',
         # More flexible: any date format after colon
+        r'Ngày\s*khởi\s*tạo\s*:\s*(\d{1,2}\s*[-/\.]\s*\d{1,2}\s*[-/\.]\s*\d{4})',
         r'Ngày\s*tạo\s*:\s*(\d{1,2}\s*[-/\.]\s*\d{1,2}\s*[-/\.]\s*\d{4})',
         r'Ngày\s*tạo\s*file\s*:\s*(\d{1,2}\s*[-/\.]\s*\d{1,2}\s*[-/\.]\s*\d{4})',
         r'Ngày\s*cập\s*nhật\s*:\s*(\d{1,2}\s*[-/\.]\s*\d{1,2}\s*[-/\.]\s*\d{4})',
