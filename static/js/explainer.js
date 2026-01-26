@@ -1842,31 +1842,31 @@ document.addEventListener('DOMContentLoaded', function () {
                 explanationKeyword = foundAliasKW.name;
             }
 
-            // Collect selected keywords from filter checkboxes
-            let selectedKeywords = [explanationKeyword]; // Default to original keyword
+            // Always collect both original and translation keywords (if translation exists)
+            // Language toggle only affects output language, not which keywords are queried
+            // ALWAYS search with both keywords regardless of checkbox state or language toggle
+            let selectedKeywords = [explanationKeyword]; // Start with the keyword user searched
 
-            if (translationInfo) {
-                const enChecked = queryCheckboxEn ? queryCheckboxEn.checked : true;
-                const vnChecked = queryCheckboxVn ? queryCheckboxVn.checked : false;
-                const vnEnabled = queryCheckboxVn ? !queryCheckboxVn.disabled : false;
-
-                selectedKeywords = [];
-
-                // Add original keyword if EN checkbox is checked
-                if (enChecked && translationInfo.original) {
-                    selectedKeywords.push(translationInfo.original);
-                }
-
-                // Add translated keyword if VN checkbox is checked and enabled
-                if (vnChecked && vnEnabled && translationInfo.translation) {
-                    selectedKeywords.push(translationInfo.translation);
-                }
-
-                // If neither is checked, default to original keyword
-                if (selectedKeywords.length === 0) {
-                    selectedKeywords = [explanationKeyword];
+            // If translation info exists, always add the translation keyword
+            // This ensures we search with BOTH the original keyword AND its translation
+            if (translationInfo && translationInfo.translation && translationInfo.translation.trim()) {
+                const translation = translationInfo.translation.trim();
+                // Only add if it's different from the original keyword (avoid duplicates)
+                if (translation.toLowerCase() !== explanationKeyword.trim().toLowerCase()) {
+                    selectedKeywords.push(translation);
                 }
             }
+
+            // Debug logging to console
+            console.log('='.repeat(100));
+            console.log('[EXPLAINER] ===== KEYWORD SELECTION DEBUG =====');
+            console.log('[EXPLAINER] User searched keyword:', keyword);
+            console.log('[EXPLAINER] Explanation keyword (after alias resolution):', explanationKeyword);
+            console.log('[EXPLAINER] Translation info:', translationInfo);
+            console.log('[EXPLAINER] Selected keywords to query:', selectedKeywords);
+            console.log('[EXPLAINER] Language toggle (output language only):', selectedLanguage);
+            console.log('[EXPLAINER] Number of selected choices:', selectedChoices.length);
+            console.log('='.repeat(100));
 
             const requestBody = JSON.stringify({
                 keyword: explanationKeyword,

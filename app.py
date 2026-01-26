@@ -962,13 +962,14 @@ def explainer_explain():
         keyword = data.get('keyword', '')
         selected_choices = data.get('selected_choices', [])
         stored_results = data.get('stored_results', [])
-        language = data.get('language', 'en')  # 'en' or 'vn'
+        selected_keywords = data.get('selected_keywords', [])  # List of keywords to query (original + translation)
+        language = data.get('language', 'en')  # 'en' or 'vn' - only affects output language
 
         app.logger.info(
-            f"[EXPLAINER EXPLAIN] keyword='{keyword}', choices={len(selected_choices)}, results={len(stored_results)}, lang={language}")
+            f"[EXPLAINER EXPLAIN] keyword='{keyword}', selected_keywords={selected_keywords}, choices={len(selected_choices)}, results={len(stored_results)}, lang={language}")
 
         result = generate_explanation(
-            keyword, selected_choices, stored_results, language=language)
+            keyword, selected_choices, stored_results, selected_keywords=selected_keywords, language=language)
         app.logger.info(
             f"[EXPLAINER EXPLAIN] Generation complete, success={result.get('success', False)}")
         return jsonify(result)
