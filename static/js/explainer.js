@@ -138,6 +138,20 @@ document.addEventListener('DOMContentLoaded', function () {
                 saveExplainerState(); // Save state when drawer closes
             }
         }
+
+        // Close all metadata chat bubbles when clicking outside
+        const openBubbles = document.querySelectorAll('.metadata-chat-bubble[style*="flex"]');
+        if (openBubbles.length > 0) {
+            const clickedBubble = Array.from(openBubbles).find(bubble => bubble.contains(e.target));
+            const clickedVersionBubble = e.target.closest('[data-version-bubble]');
+
+            // Close if click is outside any bubble and not on a version bubble
+            if (!clickedBubble && !clickedVersionBubble) {
+                openBubbles.forEach(bubble => {
+                    bubble.style.display = 'none';
+                });
+            }
+        }
     });
 
     if (aliasSearchInput) aliasSearchInput.addEventListener('input', (e) => {
@@ -1061,17 +1075,163 @@ document.addEventListener('DOMContentLoaded', function () {
         docNameSpan.textContent = docName;
         docNameSpan.title = docName;
 
+        // Find metadata (version, author, date) from storedResults for this document
+        let version = null;
+        let author = null;
+        let date = null;
+
+        if (sections && sections.length > 0 && sections[0].storeItem) {
+            // Try to get metadata from the first section's storeItem
+            const firstStoreItem = sections[0].storeItem;
+            if (firstStoreItem.gdd_version) {
+                version = firstStoreItem.gdd_version;
+            }
+            if (firstStoreItem.gdd_author) {
+                author = firstStoreItem.gdd_author;
+            }
+            if (firstStoreItem.gdd_date) {
+                date = firstStoreItem.gdd_date;
+            }
+        }
+
+        // If not found in storeItem, try to find it from storedResults by doc_name
+        if ((!version || !author || !date) && storedResults && storedResults.length > 0) {
+            const matchingResult = storedResults.find(item => item.doc_name === docName);
+            if (matchingResult) {
+                if (!version && matchingResult.gdd_version) {
+                    version = matchingResult.gdd_version;
+                }
+                if (!author && matchingResult.gdd_author) {
+                    author = matchingResult.gdd_author;
+                }
+                if (!date && matchingResult.gdd_date) {
+                    date = matchingResult.gdd_date;
+                }
+            }
+        }
+
+        // Use actual version if available, otherwise default to "v1.0"
+        let displayVersion = version || 'v1.0';
+
+        // Add "v" prefix if version doesn't start with "v"
+        if (displayVersion && !displayVersion.toLowerCase().startsWith('v')) {
+            displayVersion = 'v' + displayVersion;
+        }
+
         const countSpan = document.createElement('span');
         countSpan.className = 'doc-row-count';
         countSpan.id = `doc-count-${docId}`;
         countSpan.textContent = `(0/${sections.length})`;
+        // Set fixed width to ensure version bubbles align consistently
+        // Width accommodates double-digit counts like "(0/99)"
+        countSpan.style.width = '45px';
+        countSpan.style.textAlign = 'right';
+        countSpan.style.display = 'inline-block';
+        countSpan.style.flexShrink = '0';
 
         docHeader.appendChild(chevron);
         docHeader.appendChild(docCheckbox);
         docHeader.appendChild(fileIcon);
         docHeader.appendChild(docNameSpan);
+
+        // Always add version bubble with lighter green - smaller and aligned
+        const versionBubble = document.createElement('div');
+        versionBubble.textContent = displayVersion;
+        versionBubble.setAttribute('data-version-bubble', 'true'); // For click-outside detection
+        const lightGreen = 'rgb(108, 226, 151)';
+        const darkGreen = '#22c55e';
+        versionBubble.style.cssText = `background-color: ${lightGreen}; color: white; font-size: 0.65rem; font-weight: 600; padding: 2px 6px; border-radius: 9999px; white-space: nowrap; cursor: pointer; margin-left: 16px; margin-right: -14px; display: inline-flex; align-items: center; justify-content: center; height: 18px; line-height: 1; flex-shrink: 0; position: relative;`;
+        versionBubble.onmouseenter = function () { this.style.backgroundColor = darkGreen; };
+        versionBubble.onmouseleave = function () { this.style.backgroundColor = lightGreen; };
+
+        // Create metadata chat bubble (matching provided HTML structure)
+        const metadataBubble = document.createElement('div');
+        metadataBubble.className = 'metadata-chat-bubble';
+        metadataBubble.style.cssText = 'display: none; position: fixed; width: 240px; padding: 20px; background: rgba(248, 248, 248, 0.95); border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); z-index: 99999; align-items: center; line-height: 1.6; flex-direction: column; justify-content: center;';
+
+        // Append to body to ensure it's above everything
+        document.body.appendChild(metadataBubble);
+
+        // Build metadata content matching the provided HTML structure
+        const metadataContent = document.createElement('p');
+        metadataContent.style.cssText = 'font-size: 0.8125rem; color: var(--text-body, #333); display: flex; flex-direction: column; gap: 12px; margin: 0; width: 100%;';
+
+        // Version
+        const versionRow = document.createElement('span');
+        versionRow.style.cssText = 'display: block;';
+        versionRow.innerHTML = `<span style="font-weight: 600; color: var(--text-heading, #1a1a1a);">Version:</span> ${displayVersion}`;
+        metadataContent.appendChild(versionRow);
+
+        // Author
+        const authorRow = document.createElement('span');
+        authorRow.style.cssText = 'display: block;';
+        authorRow.innerHTML = `<span style="font-weight: 600; color: var(--text-heading, #1a1a1a);">Author:</span> ${author || 'N/A'}`;
+        metadataContent.appendChild(authorRow);
+
+        // Date
+        const dateRow = document.createElement('span');
+        dateRow.style.cssText = 'display: block;';
+        dateRow.innerHTML = `<span style="font-weight: 600; color: var(--text-heading, #1a1a1a);">Date:</span> ${date || 'N/A'}`;
+        metadataContent.appendChild(dateRow);
+
+        metadataBubble.appendChild(metadataContent);
+
+        // Function to position the bubble relative to version bubble
+        const positionBubble = () => {
+            const rect = versionBubble.getBoundingClientRect();
+            // Position bottom-left of bubble at top-right of version bubble
+            metadataBubble.style.left = (rect.right + 4) + 'px';
+            metadataBubble.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+        };
+
+        // Toggle chat bubble on click
+        versionBubble.onclick = function (e) {
+            e.stopPropagation(); // Prevent document expansion
+            e.preventDefault(); // Prevent any default behavior
+            // Close all other open bubbles first
+            document.querySelectorAll('.metadata-chat-bubble').forEach(bubble => {
+                if (bubble !== metadataBubble) {
+                    bubble.style.display = 'none';
+                }
+            });
+            // Toggle this bubble
+            const isCurrentlyOpen = metadataBubble.style.display === 'flex';
+            if (!isCurrentlyOpen) {
+                positionBubble();
+                metadataBubble.style.display = 'flex';
+            } else {
+                metadataBubble.style.display = 'none';
+            }
+        };
+
+        // Prevent clicks on the bubble itself from propagating
+        metadataBubble.onclick = function (e) {
+            e.stopPropagation();
+        };
+
+        // Reposition on scroll or resize
+        window.addEventListener('scroll', () => {
+            if (metadataBubble.style.display === 'flex') {
+                positionBubble();
+            }
+        }, true);
+
+        window.addEventListener('resize', () => {
+            if (metadataBubble.style.display === 'flex') {
+                positionBubble();
+            }
+        });
+
+        docHeader.appendChild(versionBubble);
+
         docHeader.appendChild(countSpan);
-        docHeader.onclick = () => toggleDocExpanded(docId);
+        docHeader.onclick = (e) => {
+            // Don't toggle if clicking on version bubble or its chat bubble
+            if (e.target.closest('[data-version-bubble]') || e.target.closest('.metadata-chat-bubble')) {
+                return;
+            }
+            toggleDocExpanded(docId);
+        };
 
         return docHeader;
     }

@@ -79,6 +79,31 @@ def _process_search_results(results: List[Dict], keyword: str, progress_messages
     """Process search results into the expected format."""
     doc_sections = {}
 
+    # Fetch document metadata (version, author, date) for all unique doc_ids
+    doc_metadata_map = {}
+    unique_doc_ids = set()
+    for result in results:
+        doc_id = result.get('doc_id')
+        if doc_id:
+            unique_doc_ids.add(doc_id)
+
+    if unique_doc_ids:
+        try:
+            client = get_supabase_client()
+            metadata_results = client.table('keyword_documents').select(
+                'doc_id, gdd_version, gdd_author, gdd_date'
+            ).in_('doc_id', list(unique_doc_ids)).execute()
+
+            if metadata_results.data:
+                for doc_meta in metadata_results.data:
+                    doc_metadata_map[doc_meta['doc_id']] = {
+                        'gdd_version': doc_meta.get('gdd_version'),
+                        'gdd_author': doc_meta.get('gdd_author'),
+                        'gdd_date': doc_meta.get('gdd_date')
+                    }
+        except Exception as e:
+            logger.warning(f"Failed to fetch document metadata: {e}")
+
     for result in results:
         try:
             section = result.get('section_heading')
@@ -136,6 +161,15 @@ def _process_search_results(results: List[Dict], keyword: str, progress_messages
                 'content': item.get('content', ''),
                 'chunk_id': item.get('chunk_id', '')
             }
+
+            # Add document metadata if available
+            doc_id = item.get('doc_id')
+            if doc_id and doc_id in doc_metadata_map:
+                metadata = doc_metadata_map[doc_id]
+                store_item['gdd_version'] = metadata.get('gdd_version')
+                store_item['gdd_author'] = metadata.get('gdd_author')
+                store_item['gdd_date'] = metadata.get('gdd_date')
+
             # Preserve matching keywords if they exist (for explanation generation)
             if '_matching_keywords' in item:
                 store_item['_matching_keywords'] = list(
@@ -358,36 +392,46 @@ def generate_explanation(keyword: str, selected_choices: List[str], stored_resul
         # Determine which keywords to use for querying
         # Priority: selected_keywords (from frontend) > original keyword
         logger.info("=" * 100)
-        logger.info(f"[GENERATE EXPLANATION] ===== KEYWORD SELECTION DEBUG =====")
+        logger.info(
+            f"[GENERATE EXPLANATION] ===== KEYWORD SELECTION DEBUG =====")
         logger.info(f"[GENERATE EXPLANATION] Primary keyword: '{keyword}'")
-        logger.info(f"[GENERATE EXPLANATION] selected_keywords received from frontend: {selected_keywords}")
-        logger.info(f"[GENERATE EXPLANATION] Language parameter: '{language}' (only affects output language, not keyword selection)")
-        
+        logger.info(
+            f"[GENERATE EXPLANATION] selected_keywords received from frontend: {selected_keywords}")
+        logger.info(
+            f"[GENERATE EXPLANATION] Language parameter: '{language}' (only affects output language, not keyword selection)")
+
         keywords_to_query = None
         if selected_keywords and len(selected_keywords) > 0:
             # Use provided keywords (always includes both original and translation if available)
-            keywords_to_query = [kw.strip() for kw in selected_keywords if kw and kw.strip()]
-            logger.info(f"[GENERATE EXPLANATION] ✓ Using selected_keywords from frontend: {keywords_to_query}")
-            logger.info(f"[GENERATE EXPLANATION] Number of keywords to query: {len(keywords_to_query)}")
+            keywords_to_query = [kw.strip()
+                                 for kw in selected_keywords if kw and kw.strip()]
+            logger.info(
+                f"[GENERATE EXPLANATION] ✓ Using selected_keywords from frontend: {keywords_to_query}")
+            logger.info(
+                f"[GENERATE EXPLANATION] Number of keywords to query: {len(keywords_to_query)}")
         else:
             # Fallback: use original keyword only
             keywords_to_query = [keyword.strip()]
-            logger.warning(f"[GENERATE EXPLANATION] ⚠ No selected_keywords provided, using keyword only: {keywords_to_query}")
+            logger.warning(
+                f"[GENERATE EXPLANATION] ⚠ No selected_keywords provided, using keyword only: {keywords_to_query}")
         logger.info("=" * 100)
 
         # Determine additional keywords (all except the primary keyword)
         additional_keywords = None
         if keywords_to_query and len(keywords_to_query) > 1:
             # Get all keywords except the primary one
-            additional_keywords = [kw for kw in keywords_to_query if kw.strip() != keyword.strip()]
-            logger.info(f"[GENERATE EXPLANATION] Additional keywords to search: {additional_keywords}")
+            additional_keywords = [
+                kw for kw in keywords_to_query if kw.strip() != keyword.strip()]
+            logger.info(
+                f"[GENERATE EXPLANATION] Additional keywords to search: {additional_keywords}")
         else:
-            logger.info(f"[GENERATE EXPLANATION] Only one keyword, no additional keywords")
-        
+            logger.info(
+                f"[GENERATE EXPLANATION] Only one keyword, no additional keywords")
+
         # Always use normal flow - explain_keyword will handle multiple keywords internally
         # Pass additional_keywords so it searches with all keywords
         result = explain_keyword(
-            keyword.strip(), selected_items, use_hyde=True, language=language, 
+            keyword.strip(), selected_items, use_hyde=True, language=language,
             additional_keywords=additional_keywords)
 
         if result.get('error'):
