@@ -857,21 +857,33 @@ def index_gdd_chunks_to_supabase(
             from backend.services.gdd_metadata_extractor import extract_metadata_from_chunks
             from backend.storage.keyword_storage import update_document_metadata
             
-            # Get first 3 chunks (sorted by chunk_index if available)
-            first_chunks = sorted(chunks, key=lambda c: c.get('chunk_index', 0))[:3] if chunks else []
-            
-            if first_chunks:
-                metadata = extract_metadata_from_chunks(first_chunks)
+            # Get first 3 chunks - handle both MarkdownChunk objects and dictionaries
+            if chunks:
+                # Convert MarkdownChunk objects to dict format for extract_metadata_from_chunks
+                chunk_dicts = []
+                for chunk in chunks[:3]:
+                    if hasattr(chunk, 'content'):
+                        # MarkdownChunk object
+                        chunk_dicts.append({
+                            'content': chunk.content,
+                            'chunk_index': getattr(chunk, 'chunk_id', '')
+                        })
+                    else:
+                        # Already a dictionary
+                        chunk_dicts.append(chunk)
                 
-                # Update document with extracted metadata (handles null cases)
-                update_document_metadata(
-                    doc_id=doc_id,
-                    version=metadata.get('version'),
-                    author=metadata.get('author'),
-                    date=metadata.get('date')
-                )
-                
-                logger.info(f"Extracted metadata for {doc_id}: version={metadata.get('version')}, author={metadata.get('author')}, date={metadata.get('date')}")
+                if chunk_dicts:
+                    metadata = extract_metadata_from_chunks(chunk_dicts)
+                    
+                    # Update document with extracted metadata (handles null cases)
+                    update_document_metadata(
+                        doc_id=doc_id,
+                        version=metadata.get('version'),
+                        author=metadata.get('author'),
+                        date=metadata.get('date')
+                    )
+                    
+                    logger.info(f"Extracted metadata for {doc_id}: version={metadata.get('version')}, author={metadata.get('author')}, date={metadata.get('date')}")
         except Exception as e:
             # Log error but don't fail the indexing - metadata extraction is optional
             logger.warning(f"Failed to extract metadata for {doc_id}: {e}")
