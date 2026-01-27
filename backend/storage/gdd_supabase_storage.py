@@ -852,41 +852,93 @@ def index_gdd_chunks_to_supabase(
             pdf_storage_path=pdf_storage_path  # Store PDF storage path
         )
         
-        # Extract and store metadata from first chunks
+        # Extract and store metadata - use full markdown content if available, otherwise use chunks
         try:
-            from backend.services.gdd_metadata_extractor import extract_metadata_from_chunks
+            from backend.services.gdd_metadata_extractor import extract_metadata_from_chunks, extract_metadata_from_text
             from backend.storage.keyword_storage import update_document_metadata
             
-            # Get first 3 chunks - handle both MarkdownChunk objects and dictionaries
-            if chunks:
-                # Convert MarkdownChunk objects to dict format for extract_metadata_from_chunks
-                chunk_dicts = []
-                for chunk in chunks[:3]:
-                    if hasattr(chunk, 'content'):
-                        # MarkdownChunk object
-                        chunk_dicts.append({
-                            'content': chunk.content,
-                            'chunk_index': getattr(chunk, 'chunk_id', '')
-                        })
-                    else:
-                        # Already a dictionary
-                        chunk_dicts.append(chunk)
+            metadata = {'version': None, 'author': None, 'date': None}
+            
+            # Strategy 1: Use full markdown content if available (best for table extraction)
+            if markdown_content:
+                try:
+                    # Extract from full markdown - this ensures we get the complete version table
+                    metadata = extract_metadata_from_text(markdown_content)
+                    logger.info(f"[Metadata] Extracted from full markdown for {doc_id}: version={metadata.get('version')}, author={metadata.get('author')}, date={metadata.get('date')}")
+                except Exception as e:
+                    logger.warning(f"[Metadata] Failed to extract from markdown_content for {doc_id}: {e}")
+            
+            # Strategy 2: Fallback to chunks if markdown_content not available or extraction failed
+            if (not metadata.get('version') or not metadata.get('author') or not metadata.get('date')) and chunks:
+                try:
+                    # Get first 5 chunks (increased from 3 to catch more of the version table)
+                    chunk_dicts = []
+                    for chunk in chunks[:5]:
+                        if hasattr(chunk, 'content'):
+                            # MarkdownChunk object
+                            chunk_dicts.append({
+                                'content': chunk.content,
+                                'chunk_index': getattr(chunk, 'chunk_id', '')
+                            })
+                        else:
+                            # Already a dictionary
+                            chunk_dicts.append(chunk)
+                    
+                    if chunk_dicts:
+                        chunk_metadata = extract_metadata_from_chunks(chunk_dicts)
+                        # Only update if we don't already have values from markdown extraction
+                        if not metadata.get('version') and chunk_metadata.get('version'):
+                            metadata['version'] = chunk_metadata.get('version')
+                        if not metadata.get('author') and chunk_metadata.get('author'):
+                            metadata['author'] = chunk_metadata.get('author')
+                        if not metadata.get('date') and chunk_metadata.get('date'):
+                            metadata['date'] = chunk_metadata.get('date')
+                        
+                        logger.info(f"[Metadata] Extracted from chunks for {doc_id}: version={metadata.get('version')}, author={metadata.get('author')}, date={metadata.get('date')}")
+                except Exception as e:
+                    logger.warning(f"[Metadata] Failed to extract from chunks for {doc_id}: {e}")
+            
+            # Update document with extracted metadata (handles null cases)
+            if metadata.get('version') or metadata.get('author') or metadata.get('date'):
+                success = update_document_metadata(
+                    doc_id=doc_id,
+                    version=metadata.get('version'),
+                    author=metadata.get('author'),
+                    date=metadata.get('date')
+                )
                 
-                if chunk_dicts:
-                    metadata = extract_metadata_from_chunks(chunk_dicts)
-                    
-                    # Update document with extracted metadata (handles null cases)
-                    update_document_metadata(
-                        doc_id=doc_id,
-                        version=metadata.get('version'),
-                        author=metadata.get('author'),
-                        date=metadata.get('date')
-                    )
-                    
-                    logger.info(f"Extracted metadata for {doc_id}: version={metadata.get('version')}, author={metadata.get('author')}, date={metadata.get('date')}")
+                if success:
+                    logger.info(f"[Metadata] ✅ Updated metadata for {doc_id}: version={metadata.get('version')}, author={metadata.get('author')}, date={metadata.get('date')}")
+                else:
+                    logger.error(f"[Metadata] ❌ Failed to update metadata in database for {doc_id}")
+            else:
+                logger.warning(f"[Metadata] ⚠️ No metadata found for {doc_id}")
+                
+            # Post-indexing verification: Double-check metadata was saved correctly
+            # This ensures metadata is always correct even if there was a race condition
+            try:
+                client = get_supabase_client()
+                verify_result = client.table('keyword_documents').select(
+                    'gdd_version, gdd_author, gdd_date'
+                ).eq('doc_id', doc_id).limit(1).execute()
+                
+                if verify_result.data:
+                    saved_meta = verify_result.data[0]
+                    # If we extracted metadata but it's not in DB, try updating again
+                    if metadata.get('version') and not saved_meta.get('gdd_version'):
+                        logger.warning(f"[Metadata] Verification failed: version not saved, retrying update for {doc_id}")
+                        update_document_metadata(
+                            doc_id=doc_id,
+                            version=metadata.get('version'),
+                            author=metadata.get('author'),
+                            date=metadata.get('date')
+                        )
+            except Exception as e:
+                logger.warning(f"[Metadata] Verification check failed for {doc_id}: {e}")
+                
         except Exception as e:
             # Log error but don't fail the indexing - metadata extraction is optional
-            logger.warning(f"Failed to extract metadata for {doc_id}: {e}")
+            logger.warning(f"[Metadata] ❌ Failed to extract metadata for {doc_id}: {e}", exc_info=True)
             import traceback
             logger.debug(traceback.format_exc())
         
