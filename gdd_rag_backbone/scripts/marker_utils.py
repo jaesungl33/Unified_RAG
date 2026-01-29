@@ -14,11 +14,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 logger = logging.getLogger(__name__)
 
 
-def run_marker(pdf_path: Path, output_dir: Path) -> Tuple[bool, str]:
+def run_marker(pdf_path: Path, output_dir: Path, debug: bool = False) -> Tuple[bool, str]:
     """
     Run Marker CLI: marker_single <pdf_path> --output_format markdown --output_dir <output_dir>.
     Image extraction is enabled by default (do not pass --disable_image_extraction).
     On success, output is output_dir/<stem>/<stem>.md and output_dir/<stem>/images/.
+    If debug=True, passes --debug to Marker (saves per-page layout images and extra JSON).
     """
     exe = shutil.which("marker_single")
     if not exe:
@@ -32,6 +33,8 @@ def run_marker(pdf_path: Path, output_dir: Path) -> Tuple[bool, str]:
             "--output_dir",
             str(output_dir),
         ]
+        if debug:
+            cmd.append("--debug")
         logger.info("Running: %s", " ".join(cmd))
         r = subprocess.run(
             cmd,
