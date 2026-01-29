@@ -63,3 +63,17 @@ chunks/**/*.json
 Tank War/
 tank_online_1-dev/
 
+# PDFs
+*.pdf
+
+# Images (common formats)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.bmp
+*.ico
+*.svg
+*.tiff
+*.tif

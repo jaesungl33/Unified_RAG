@@ -14,7 +14,6 @@ import signal
 import uuid
 import threading
 from time import sleep
-# from backend.gdd_service import upload_and_index_document_bytes  # Now using keyword_extractor backend
 
 
 # --- Simple in-memory progress tracking and job execution ---
@@ -962,8 +961,10 @@ def explainer_explain():
         keyword = data.get('keyword', '')
         selected_choices = data.get('selected_choices', [])
         stored_results = data.get('stored_results', [])
-        selected_keywords = data.get('selected_keywords', [])  # List of keywords to query (original + translation)
-        language = data.get('language', 'en')  # 'en' or 'vn' - only affects output language
+        # List of keywords to query (original + translation)
+        selected_keywords = data.get('selected_keywords', [])
+        # 'en' or 'vn' - only affects output language
+        language = data.get('language', 'en')
 
         app.logger.info(
             f"[EXPLAINER EXPLAIN] keyword='{keyword}', selected_keywords={selected_keywords}, choices={len(selected_choices)}, results={len(stored_results)}, lang={language}")

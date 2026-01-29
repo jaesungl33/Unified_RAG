@@ -2,6 +2,11 @@
 Index a single PDF using Marker (PDF → Markdown + images), then chunk and index to Supabase.
 
 Images extracted by Marker are uploaded to gdd_pdfs/{doc_id}/images/ and referenced in markdown.
+Image extraction is on by default (Marker does not use --disable_image_extraction).
+
+Debugging (web vs local): If images appear when run locally but not from the web app, check
+server logs for [Marker stdout], [Marker stderr], [Marker output_dir], [Marker images].
+See https://github.com/datalab-to/marker (e.g. TORCH_DEVICE, --debug, CPU/GPU behavior).
 
 Usage (from project root with venv activated):
     python -m gdd_rag_backbone.scripts.index_pdf_with_marker --file "path/to/document.pdf" [--dry-run]
@@ -14,16 +19,15 @@ from backend.storage.supabase_client import (
 )
 from backend.storage.gdd_supabase_storage import index_gdd_chunks_to_supabase, USE_SUPABASE
 from gdd_rag_backbone.markdown_chunking import MarkdownChunker
-from gdd_rag_backbone.scripts.chunk_markdown_files import generate_doc_id
+from gdd_rag_backbone.scripts.marker_utils import run_marker, find_marker_output_dir
+from backend.services.document_service import generate_doc_id
 import argparse
 import logging
 import os
 import re
-import shutil
-import subprocess
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any, Callable
+from typing import Dict, List, Optional, Any, Callable
 
 # Add project root for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -32,59 +36,6 @@ if str(PROJECT_ROOT) not in __import__("sys").path:
 
 
 logger = logging.getLogger(__name__)
-
-
-def _run_marker(pdf_path: Path, output_dir: Path) -> Tuple[bool, str]:
-    """
-    Run Marker CLI: marker_single <pdf_path> --output_format markdown --output_dir <output_dir>.
-    On success, output is output_dir/<stem>/<stem>.md and output_dir/<stem>/images/.
-    """
-    exe = shutil.which("marker_single")
-    if not exe:
-        return False, "marker_single CLI not found (pip install marker-pdf)"
-    try:
-        cmd = [
-            exe,
-            str(pdf_path),
-            "--output_format",
-            "markdown",
-            "--output_dir",
-            str(output_dir),
-        ]
-        logger.info("Running: %s", " ".join(cmd))
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=900,
-            cwd=str(PROJECT_ROOT),
-        )
-        if r.returncode != 0:
-            return False, (r.stderr or r.stdout or f"exit code {r.returncode}")
-        return True, ""
-    except subprocess.TimeoutExpired:
-        return False, "Marker timed out (900s)"
-    except Exception as e:
-        return False, str(e)
-
-
-def _find_marker_output_dir(output_dir: Path, pdf_stem: str) -> Optional[Path]:
-    """
-    Marker writes to output_dir/<name>/ where <name> is derived from the PDF.
-    Return the single subfolder that contains a .md file, or the one matching pdf_stem.
-    """
-    if not output_dir.exists():
-        return None
-    subs = [p for p in output_dir.iterdir() if p.is_dir()]
-    for sub in subs:
-        md_candidates = list(sub.glob("*.md"))
-        if md_candidates:
-            return sub
-    # Try exact stem
-    stem_dir = output_dir / pdf_stem
-    if stem_dir.exists() and stem_dir.is_dir():
-        return stem_dir
-    return None
 
 
 def _replace_markdown_image_refs(markdown: str, filename_to_url: Dict[str, str]) -> str:
@@ -197,7 +148,7 @@ def index_pdf_with_marker(
         return {"status": "error", "message": "Supabase is not configured"}
 
     original_filename = pdf_path.name
-    doc_id = generate_doc_id(Path(original_filename))
+    doc_id = generate_doc_id(original_filename)
     pdf_filename = secure_filename(original_filename).replace(" ", "_")
 
     if dry_run:
@@ -212,17 +163,22 @@ def index_pdf_with_marker(
 
         # 1) Run Marker
         bump("Converting PDF with Marker")
-        ok, err = _run_marker(pdf_path, out_dir)
+        ok, err = run_marker(pdf_path, out_dir)
         if not ok:
             return {"status": "error", "message": f"Marker failed: {err}"}
 
         # 2) Locate output folder and files
         bump("Reading Marker output")
         pdf_stem = pdf_path.stem
-        marker_dir = _find_marker_output_dir(out_dir, pdf_stem)
+        # Log raw Marker output layout (for debugging web vs local image extraction)
+        if out_dir.exists():
+            subdirs = [p.name for p in out_dir.iterdir() if p.is_dir()]
+            logger.info("[Marker output_dir] subdirs: %s", subdirs)
+        marker_dir = find_marker_output_dir(out_dir, pdf_stem)
         if not marker_dir:
             return {"status": "error", "message": "Marker did not produce expected output folder with .md file"}
 
+        logger.info("[Marker marker_dir] %s", marker_dir)
         md_files = list(marker_dir.glob("*.md"))
         if not md_files:
             return {"status": "error", "message": "No .md file in Marker output"}
@@ -233,6 +189,17 @@ def index_pdf_with_marker(
         images_dir = marker_dir / "images"
         image_paths = list(images_dir.glob("*")) if images_dir.exists() else []
         image_paths = [p for p in image_paths if p.is_file()]
+        logger.info(
+            "[Marker images] images_dir.exists=%s, image_count=%d, filenames=%s",
+            images_dir.exists(),
+            len(image_paths),
+            [p.name for p in image_paths],
+        )
+        if not images_dir.exists():
+            logger.warning(
+                "[Marker images] No images/ folder under %s (Marker may skip images in some environments; see https://github.com/datalab-to/marker)",
+                marker_dir,
+            )
 
         # 3) Upload images to gdd_pdfs/{doc_id}/images/ and build metadata + URL map
         bump("Uploading images to storage")
@@ -261,6 +228,9 @@ def index_pdf_with_marker(
                 )
             else:
                 logger.warning("Upload failed for image %s", name)
+
+        logger.info("[Marker→Supabase] Uploaded %d/%d images to gdd_pdfs/%s/images/",
+                    len(images_metadata), len(image_paths), doc_id)
 
         # 4) Update markdown: replace image refs with public URLs (before chunking)
         markdown_with_urls = _replace_markdown_image_refs(

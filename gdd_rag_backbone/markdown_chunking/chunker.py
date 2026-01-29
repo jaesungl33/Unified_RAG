@@ -163,9 +163,9 @@ class MarkdownChunker:
         A line is considered a header if, after stripping leading '#' and whitespace,
         it matches this regex:
 
-            r'^\\d+(?:\\.\\d+)*\\.?\\s*[^\\W\\d_]'
+            r'^\\d+\\.(?:\\d+(\\.\\d+)*)?\\s*[^\\W\\d_]'
 
-        i.e. it starts with a numbering like "4." or "4.1.2" followed by text.
+        i.e. it starts with a numbering like "1." or "4.1" or "4.1.2" (digit(s) then a dot) followed by text.
 
         Args:
             section: Section to split
@@ -181,7 +181,7 @@ class MarkdownChunker:
         current_sub_header: Optional[str] = None
         line_start = section.line_start
 
-        header_pattern = re.compile(r'^\d+(?:\.\d+)*\.?\s*[^\W\d_]')
+        header_pattern = re.compile(r'^\d+\.(?:\d+(\.\d+)*)?\s*[^\W\d_]')
 
         for i, line in enumerate(lines):
             # Clean line: remove leading markdown header markers and whitespace

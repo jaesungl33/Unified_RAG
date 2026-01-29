@@ -24,10 +24,10 @@ class MarkdownParser:
     """Parser for markdown files to extract structure."""
 
     def __init__(self):
-        # Only numbered section headers like "1 Overview", "4.1 Components", "4.1.2 Tank Classes"
-        # (after stripping leading '#' and whitespace). No ## / ### detection.
+        # Only numbered section headers like "1. Overview", "4.1 Components", "4.1.2 Tank Classes"
+        # (after stripping leading '#' and whitespace). Requires digit(s) then a dot. No ## / ### detection.
         self.numbered_header_pattern = re.compile(
-            r'^\d+(?:\.\d+)*\.?\s*[^\W\d_]')
+            r'^\d+\.(?:\d+(\.\d+)*)?\s*[^\W\d_]')
 
     def parse(self, markdown_content: str) -> List[MarkdownSection]:
         """

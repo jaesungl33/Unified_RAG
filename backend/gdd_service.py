@@ -10,7 +10,6 @@ import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from io import BytesIO
 from werkzeug.utils import secure_filename
 
 # Add project root to path for imports
@@ -34,22 +33,7 @@ except ImportError:
 # Import gdd_rag_backbone (now included in unified_rag_app)
 try:
     from gdd_rag_backbone.config import DEFAULT_DOCS_DIR, DEFAULT_WORKING_DIR
-    from gdd_rag_backbone.llm_providers import (
-        QwenProvider,
-        make_embedding_func,
-    )
-    # Removed get_markdown_top_chunks - using Supabase only, no local storage fallback
-    from gdd_rag_backbone.scripts.chunk_markdown_files import (
-        generate_doc_id as generate_md_doc_id,
-        save_chunks as save_md_chunks,
-    )
-    from gdd_rag_backbone.scripts.index_markdown_chunks import index_chunks_for_doc
-    from gdd_rag_backbone.markdown_chunking import MarkdownChunker
     GDD_RAG_BACKBONE_AVAILABLE = True
-
-    # Define directory paths (but don't create them - not needed for Render)
-    DEFAULT_DOCS_DIR = PROJECT_ROOT / "docs"
-    DEFAULT_WORKING_DIR = PROJECT_ROOT / "rag_storage"
 except ImportError as e:
     import sys
     import traceback
@@ -59,9 +43,6 @@ except ImportError as e:
     # Set defaults to avoid NameError
     DEFAULT_DOCS_DIR = PROJECT_ROOT / "docs"
     DEFAULT_WORKING_DIR = PROJECT_ROOT / "rag_storage"
-
-# Markdown directory path
-MARKDOWN_DIR = PROJECT_ROOT / "gdd_data" / "markdown"
 
 
 def _generate_doc_id_from_filename(filename: Path) -> str:
@@ -355,142 +336,6 @@ def _select_chunks_for_answer(chunks):
     return chunks[:n]
 
 
-def _convert_pdf_bytes_to_markdown(pdf_bytes: bytes, filename: str) -> str:
-    """
-    Convert PDF bytes to Markdown using Docling without writing to disk.
-    Falls back to PyPDF2 if Docling is not available.
-    Uses Docling DocumentStream (in-memory).
-    Enables OCR with Vietnamese + English language support.
-    """
-    import logging
-    import os
-    logger = logging.getLogger(__name__)
-
-    # Set TESSDATA_PREFIX to point to Tesseract language data directory
-    # This ensures Tesseract can find Vietnamese language files
-    tesseract_data_path = '/opt/homebrew/share/tessdata'
-    if os.path.exists(tesseract_data_path):
-        os.environ['TESSDATA_PREFIX'] = tesseract_data_path
-        logger.info(f"Set TESSDATA_PREFIX to {tesseract_data_path}")
-
-    # Try Docling first (preferred method)
-    try:
-        from docling.document_converter import DocumentConverter
-        from docling.datamodel.base_models import DocumentStream
-
-        # Try to import clean_markdown, but use simple function if not available
-        try:
-            from PDFtoMarkdown.pdf_to_markdown import clean_markdown
-        except ImportError:
-            # Simple markdown cleaning function if PDFtoMarkdown is not available
-            def clean_markdown(text):
-                if not text:
-                    return ""
-                # Basic cleaning: remove control characters except newlines and tabs
-                import re
-                # Remove null bytes and other control chars
-                text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', text)
-                return text
-
-        # Configure OCR with Vietnamese language support
-        # Set environment variables that Tesseract will use
-        os.environ['TESSERACT_LANG'] = 'vie+eng'  # Vietnamese + English
-        logger.info("Set TESSERACT_LANG environment variable: vie+eng")
-
-        # Try to configure DocumentConverter with OCR options
-        # Note: DocumentConverter may not accept pipeline_options directly
-        # We'll rely on environment variables and try to configure if possible
-        converter = None
-        try:
-            from docling.datamodel.pipeline_options import PdfPipelineOptions
-
-            pipeline_options = PdfPipelineOptions()
-            pipeline_options.do_ocr = True  # Enable OCR for image-based tables and scanned text
-            pipeline_options.do_table_structure = True  # Enable table structure detection
-
-            # Try to configure OCR language if the option exists
-            if hasattr(pipeline_options, 'ocr_language'):
-                try:
-                    pipeline_options.ocr_language = 'vie+eng'
-                    logger.info(
-                        "Configured OCR language via ocr_language attribute: vie+eng")
-                except Exception as e:
-                    logger.debug(f"Failed to set ocr_language: {e}")
-            elif hasattr(pipeline_options, 'ocr_options'):
-                try:
-                    if pipeline_options.ocr_options is None:
-                        pipeline_options.ocr_options = {}
-                    pipeline_options.ocr_options['lang'] = 'vie+eng'
-                    logger.info(
-                        "Configured OCR language via ocr_options: vie+eng")
-                except Exception as e:
-                    logger.debug(f"Failed to set ocr_options: {e}")
-
-            # Try to create converter with options (may not be supported in all versions)
-            try:
-                converter = DocumentConverter(
-                    pipeline_options=pipeline_options)
-                logger.info(
-                    "Created DocumentConverter with pipeline_options (OCR enabled)")
-            except TypeError:
-                # pipeline_options parameter not supported, try alternative methods
-                logger.info(
-                    "DocumentConverter doesn't accept pipeline_options, trying alternative configuration")
-                converter = None
-        except ImportError:
-            logger.debug("PdfPipelineOptions not available")
-
-        # If converter creation with options failed, create default converter
-        # OCR will still work via environment variables if Docling uses Tesseract internally
-        if converter is None:
-            converter = DocumentConverter()
-            logger.info(
-                "Created DocumentConverter (OCR may be enabled via environment variables)")
-
-        stream = BytesIO(pdf_bytes)
-        doc_stream = DocumentStream(name=filename, stream=stream)
-        result = converter.convert(doc_stream)
-        markdown_content = result.document.export_to_markdown()
-        return clean_markdown(markdown_content)
-
-    except ImportError as e:
-        logger.warning(f"Docling not available ({e}), falling back to PyPDF2")
-        # Fallback to PyPDF2
-        try:
-            from PyPDF2 import PdfReader
-            pdf_file = BytesIO(pdf_bytes)
-            reader = PdfReader(pdf_file)
-            text_parts = []
-            for page in reader.pages:
-                text_parts.append(page.extract_text())
-            text = "\n\n".join(text_parts)
-            # Basic markdown formatting
-            return text
-        except ImportError:
-            raise ImportError(
-                "Neither 'docling' nor 'PyPDF2' is installed. "
-                "Please install at least one: pip install docling OR pip install pypdf2"
-            )
-    except Exception as e:
-        logger.error(f"Docling conversion failed: {e}, falling back to PyPDF2")
-        # Fallback to PyPDF2 on any error
-        try:
-            from PyPDF2 import PdfReader
-            pdf_file = BytesIO(pdf_bytes)
-            reader = PdfReader(pdf_file)
-            text_parts = []
-            for page in reader.pages:
-                text_parts.append(page.extract_text())
-            text = "\n\n".join(text_parts)
-            return text
-        except Exception as fallback_error:
-            raise Exception(
-                f"PDF conversion failed with both Docling and PyPDF2. "
-                f"Docling error: {str(e)}, PyPDF2 error: {str(fallback_error)}"
-            )
-
-
-# gdd_service.py
 def upload_and_index_document_bytes(pdf_bytes: bytes, original_filename: str, progress_cb=None):
     """
     Upload and index a PDF using Marker (PDF → Markdown + images), then chunk and index to Supabase.
