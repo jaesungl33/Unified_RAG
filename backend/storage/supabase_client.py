@@ -246,7 +246,15 @@ def vector_search_code_chunks(
         logger.error(f"[Supabase Code Search] Error: {e}")
         raise Exception(f"Error in Code vector search: {e}")
 
-def insert_gdd_document(doc_id: str, name: str, file_path: Optional[str] = None, file_size: Optional[int] = None, markdown_content: Optional[str] = None, pdf_storage_path: Optional[str] = None) -> Dict[str, Any]:
+def insert_gdd_document(
+    doc_id: str,
+    name: str,
+    file_path: Optional[str] = None,
+    file_size: Optional[int] = None,
+    markdown_content: Optional[str] = None,
+    pdf_storage_path: Optional[str] = None,
+    images: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """
     Insert or update a GDD document.
     Uses keyword_documents table (shared with Keyword Finder feature).
@@ -259,6 +267,7 @@ def insert_gdd_document(doc_id: str, name: str, file_path: Optional[str] = None,
         markdown_content: Optional full markdown content (stored as full_text in keyword_documents)
         pdf_storage_path: Optional PDF filename in Supabase Storage (gdd_pdfs bucket)
                       Note: This is stored in file_path if pdf_storage_path is provided
+        images: Optional list of image metadata dicts: [{"filename": "...", "url": "...", "path": "doc_id/images/..."}]
     
     Returns:
         Inserted/updated document data
@@ -276,6 +285,8 @@ def insert_gdd_document(doc_id: str, name: str, file_path: Optional[str] = None,
             'file_size': file_size,
             'full_text': markdown_content  # Store markdown_content as full_text
         }
+        if images is not None:
+            doc_data['images'] = images
         
         result = client.table('keyword_documents').upsert(doc_data, on_conflict='doc_id').execute()
         
@@ -578,6 +589,57 @@ def upload_pdf_to_storage(pdf_path: Path, pdf_filename: str) -> bool:
         logger = logging.getLogger(__name__)
         logger.error(f"❌ Error uploading PDF to storage: {e}")
         return False
+
+
+def upload_gdd_image_to_storage(doc_id: str, image_filename: str, image_bytes: bytes, content_type: str = "image/webp") -> Optional[str]:
+    """
+    Upload a single image to gdd_pdfs bucket under {doc_id}/images/{image_filename}.
+    Returns the public URL for the uploaded image, or None on failure.
+
+    Args:
+        doc_id: Document ID (used as subfolder)
+        image_filename: Filename to use in storage (e.g. "abc123_1_img.webp")
+        image_bytes: Raw image bytes
+        content_type: MIME type (default image/webp)
+
+    Returns:
+        Public URL string, or None if upload failed
+    """
+    try:
+        client = get_supabase_client(use_service_key=True)
+        bucket_name = "gdd_pdfs"
+        storage_path = f"{doc_id}/images/{image_filename}"
+        client.storage.from_(bucket_name).upload(
+            path=storage_path,
+            file=image_bytes,
+            file_options={
+                "content-type": content_type,
+                "cache-control": "3600",
+                "upsert": "true",
+            },
+        )
+        url = client.storage.from_(bucket_name).get_public_url(storage_path)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Uploaded image to gdd_pdfs: {storage_path}")
+        return url
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error uploading image to storage: {e}")
+        return None
+
+
+def get_gdd_image_public_url(doc_id: str, image_filename: str) -> str:
+    """
+    Get public URL for an image stored under gdd_pdfs/{doc_id}/images/{image_filename}.
+    Does not verify that the file exists.
+    """
+    client = get_supabase_client()
+    bucket_name = "gdd_pdfs"
+    storage_path = f"{doc_id}/images/{image_filename}"
+    return client.storage.from_(bucket_name).get_public_url(storage_path)
+
 
 def get_gdd_document_pdf_url(doc_id: str) -> Optional[str]:
     """

@@ -609,7 +609,8 @@ def index_gdd_chunks_to_supabase(
     chunks: List[Dict],
     provider,
     markdown_content: Optional[str] = None,
-    pdf_storage_path: Optional[str] = None
+    pdf_storage_path: Optional[str] = None,
+    images: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
     """
     Index GDD chunks to Supabase with embeddings.
@@ -620,6 +621,7 @@ def index_gdd_chunks_to_supabase(
         provider: LLM provider for embeddings
         markdown_content: Optional full markdown content to store
         pdf_storage_path: Optional PDF filename in Supabase Storage (gdd_pdfs bucket)
+        images: Optional list of image metadata dicts [{"filename", "url", "path"}] for keyword_documents.images
     
     Returns:
         True if successful
@@ -843,13 +845,14 @@ def index_gdd_chunks_to_supabase(
             file_path = ""
         doc_name = Path(file_path).name if file_path else doc_id
         
-        # Store markdown content and PDF path in Supabase
+        # Store markdown content, PDF path, and images in Supabase
         insert_gdd_document(
             doc_id=doc_id,
             name=doc_name,
             file_path=file_path,
             markdown_content=markdown_content,  # Store markdown content in Supabase
-            pdf_storage_path=pdf_storage_path  # Store PDF storage path
+            pdf_storage_path=pdf_storage_path,  # Store PDF storage path
+            images=images,  # Store extracted image metadata (keyword_documents.images JSONB)
         )
         
         # Extract and store metadata - use full markdown content if available, otherwise use chunks

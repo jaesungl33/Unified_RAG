@@ -12,7 +12,7 @@ from typing import List, Optional, Tuple
 @dataclass
 class MarkdownSection:
     """Represents a section in a markdown document."""
-    level: int  # Header level (1 for ##, 2 for ###, etc.)
+    level: int  # Depth from numbering: 1 for "1", 2 for "4.1", 3 for "4.1.2", etc.
     header: str  # Header text (without # symbols)
     content: str  # Section content (everything until next header)
     line_start: int  # Starting line number
@@ -22,56 +22,66 @@ class MarkdownSection:
 
 class MarkdownParser:
     """Parser for markdown files to extract structure."""
-    
+
     def __init__(self):
-        # Pattern to match headers: ## Header or ### Header
-        self.header_pattern = re.compile(r'^(#{2,})\s+(.+)$', re.MULTILINE)
-        # Pattern to match numbered sections: 4.1, 5.2, etc.
-        self.numbered_section_pattern = re.compile(r'^#{2,}\s+(\d+\.\d+[\.\d]*)\s+(.+)$', re.MULTILINE)
-    
+        # Only numbered section headers like "1 Overview", "4.1 Components", "4.1.2 Tank Classes"
+        # (after stripping leading '#' and whitespace). No ## / ### detection.
+        self.numbered_header_pattern = re.compile(
+            r'^\d+(?:\.\d+)*\.?\s*[^\W\d_]')
+
     def parse(self, markdown_content: str) -> List[MarkdownSection]:
         """
         Parse markdown content into sections.
-        
+
         Args:
             markdown_content: Full markdown content as string
-        
+
         Returns:
             List of MarkdownSection objects
         """
         lines = markdown_content.split('\n')
         sections: List[MarkdownSection] = []
-        
+
         current_section: Optional[MarkdownSection] = None
         current_content: List[str] = []
         current_level = 0
-        parent_stack: List[Tuple[int, str]] = []  # Stack to track (level, header) pairs
-        
+        # Stack to track (level, header) pairs
+        parent_stack: List[Tuple[int, str]] = []
+
         for i, line in enumerate(lines):
-            # Check if this line is a header
-            header_match = self.header_pattern.match(line)
-            
-            if header_match:
+            # Normalized line text without leading '#' for numeric header detection
+            line_text_clean = line.lstrip('#').strip()
+
+            # Only numbered lines are headers (e.g. "1 Overview", "4.1 Components")
+            numeric_match = self.numbered_header_pattern.match(line_text_clean)
+
+            if numeric_match:
                 # Save previous section if exists
                 if current_section is not None:
-                    current_section.content = '\n'.join(current_content).strip()
+                    current_section.content = '\n'.join(
+                        current_content).strip()
                     current_section.line_end = i - 1
                     sections.append(current_section)
-                
-                # Extract header level and text
-                header_level = len(header_match.group(1))
-                header_text = header_match.group(2).strip()
-                
+
+                # Derive level from number depth: "1" -> 1, "4.1" -> 2, "4.1.2" -> 3
+                num_part = line_text_clean.split(
+                )[0] if line_text_clean.split() else ""
+                header_level = 1 + \
+                    num_part.count(".") if num_part.replace(
+                        ".", "").isdigit() else 2
+                header_text = line_text_clean
+
                 # Update parent stack based on level
                 # Remove parents at same or deeper level
-                parent_stack = [(lvl, hdr) for lvl, hdr in parent_stack if lvl < header_level]
-                
+                parent_stack = [(lvl, hdr)
+                                for lvl, hdr in parent_stack if lvl < header_level]
+
                 # Determine parent header (last header at shallower level)
                 parent_header = parent_stack[-1][1] if parent_stack else None
-                
+
                 # Add to parent stack
                 parent_stack.append((header_level, header_text))
-                
+
                 # Start new section
                 current_section = MarkdownSection(
                     level=header_level,
@@ -90,7 +100,7 @@ class MarkdownParser:
                 elif not sections:
                     # Content before first header - create a pseudo-section
                     current_content.append(line)
-        
+
         # Save last section
         if current_section is not None:
             current_section.content = '\n'.join(current_content).strip()
@@ -106,18 +116,18 @@ class MarkdownParser:
                 line_end=len(lines) - 1,
                 parent_header=None
             ))
-        
+
         return sections
-    
+
     def extract_document_title(self, markdown_content: str) -> str:
         """
         Extract document title from markdown.
-        
-        Looks for first ## header or uses filename.
-        
+
+        Uses first numbered section header (e.g. "1 Overview") or "Untitled Document".
+
         Args:
             markdown_content: Full markdown content
-        
+
         Returns:
             Document title
         """
@@ -125,27 +135,27 @@ class MarkdownParser:
         if sections and sections[0].header:
             return sections[0].header
         return "Untitled Document"
-    
+
     def split_by_paragraphs(self, content: str) -> List[str]:
         """
         Split content by paragraph boundaries (double newlines).
-        
+
         Args:
             content: Content to split
-        
+
         Returns:
             List of paragraphs
         """
         paragraphs = re.split(r'\n\s*\n', content)
         return [p.strip() for p in paragraphs if p.strip()]
-    
+
     def split_by_sentences(self, content: str) -> List[str]:
         """
         Split content by sentence boundaries.
-        
+
         Args:
             content: Content to split
-        
+
         Returns:
             List of sentences
         """
@@ -161,14 +171,14 @@ class MarkdownParser:
         if len(sentences) % 2 == 1:
             result.append(sentences[-1])
         return [s.strip() for s in result if s.strip()]
-    
+
     def split_by_list_items(self, content: str) -> List[str]:
         """
         Split content by bullet list items.
-        
+
         Args:
             content: Content to split
-        
+
         Returns:
             List of list items (with their bullets)
         """
@@ -176,7 +186,7 @@ class MarkdownParser:
         lines = content.split('\n')
         items = []
         current_item = []
-        
+
         for line in lines:
             # Check if line is a list item
             if re.match(r'^\s*[-*]\s+', line) or re.match(r'^\s*\d+[.)]\s+', line):
@@ -190,9 +200,8 @@ class MarkdownParser:
                     # Non-list content - treat as separate item
                     if line.strip():
                         items.append(line.strip())
-        
+
         if current_item:
             items.append('\n'.join(current_item).strip())
-        
-        return [item for item in items if item]
 
+        return [item for item in items if item]

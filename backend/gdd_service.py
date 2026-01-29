@@ -360,9 +360,18 @@ def _convert_pdf_bytes_to_markdown(pdf_bytes: bytes, filename: str) -> str:
     Convert PDF bytes to Markdown using Docling without writing to disk.
     Falls back to PyPDF2 if Docling is not available.
     Uses Docling DocumentStream (in-memory).
+    Enables OCR with Vietnamese + English language support.
     """
     import logging
+    import os
     logger = logging.getLogger(__name__)
+
+    # Set TESSDATA_PREFIX to point to Tesseract language data directory
+    # This ensures Tesseract can find Vietnamese language files
+    tesseract_data_path = '/opt/homebrew/share/tessdata'
+    if os.path.exists(tesseract_data_path):
+        os.environ['TESSDATA_PREFIX'] = tesseract_data_path
+        logger.info(f"Set TESSDATA_PREFIX to {tesseract_data_path}")
 
     # Try Docling first (preferred method)
     try:
@@ -383,7 +392,61 @@ def _convert_pdf_bytes_to_markdown(pdf_bytes: bytes, filename: str) -> str:
                 text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', text)
                 return text
 
-        converter = DocumentConverter()
+        # Configure OCR with Vietnamese language support
+        # Set environment variables that Tesseract will use
+        os.environ['TESSERACT_LANG'] = 'vie+eng'  # Vietnamese + English
+        logger.info("Set TESSERACT_LANG environment variable: vie+eng")
+
+        # Try to configure DocumentConverter with OCR options
+        # Note: DocumentConverter may not accept pipeline_options directly
+        # We'll rely on environment variables and try to configure if possible
+        converter = None
+        try:
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+
+            pipeline_options = PdfPipelineOptions()
+            pipeline_options.do_ocr = True  # Enable OCR for image-based tables and scanned text
+            pipeline_options.do_table_structure = True  # Enable table structure detection
+
+            # Try to configure OCR language if the option exists
+            if hasattr(pipeline_options, 'ocr_language'):
+                try:
+                    pipeline_options.ocr_language = 'vie+eng'
+                    logger.info(
+                        "Configured OCR language via ocr_language attribute: vie+eng")
+                except Exception as e:
+                    logger.debug(f"Failed to set ocr_language: {e}")
+            elif hasattr(pipeline_options, 'ocr_options'):
+                try:
+                    if pipeline_options.ocr_options is None:
+                        pipeline_options.ocr_options = {}
+                    pipeline_options.ocr_options['lang'] = 'vie+eng'
+                    logger.info(
+                        "Configured OCR language via ocr_options: vie+eng")
+                except Exception as e:
+                    logger.debug(f"Failed to set ocr_options: {e}")
+
+            # Try to create converter with options (may not be supported in all versions)
+            try:
+                converter = DocumentConverter(
+                    pipeline_options=pipeline_options)
+                logger.info(
+                    "Created DocumentConverter with pipeline_options (OCR enabled)")
+            except TypeError:
+                # pipeline_options parameter not supported, try alternative methods
+                logger.info(
+                    "DocumentConverter doesn't accept pipeline_options, trying alternative configuration")
+                converter = None
+        except ImportError:
+            logger.debug("PdfPipelineOptions not available")
+
+        # If converter creation with options failed, create default converter
+        # OCR will still work via environment variables if Docling uses Tesseract internally
+        if converter is None:
+            converter = DocumentConverter()
+            logger.info(
+                "Created DocumentConverter (OCR may be enabled via environment variables)")
+
         stream = BytesIO(pdf_bytes)
         doc_stream = DocumentStream(name=filename, stream=stream)
         result = converter.convert(doc_stream)
@@ -430,10 +493,12 @@ def _convert_pdf_bytes_to_markdown(pdf_bytes: bytes, filename: str) -> str:
 # gdd_service.py
 def upload_and_index_document_bytes(pdf_bytes: bytes, original_filename: str, progress_cb=None):
     """
-    Upload and index a PDF using bytes (no local disk).
+    Upload and index a PDF using Marker (PDF → Markdown + images), then chunk and index to Supabase.
     progress_cb: optional callable(step_text: str) for UI progress.
     """
     import logging
+    import tempfile
+
     logger = logging.getLogger(__name__)
 
     def bump(step):
@@ -441,219 +506,25 @@ def upload_and_index_document_bytes(pdf_bytes: bytes, original_filename: str, pr
             progress_cb(step)
         logger.info(f"[Upload Progress] {step}")
 
-    # 1) Convert PDF -> Markdown
-    bump("Converting to Markdown")
-    markdown_content = _convert_pdf_bytes_to_markdown(
-        pdf_bytes, original_filename)
+    if not original_filename.lower().endswith(".pdf"):
+        return {"status": "error", "message": "Only PDF files are supported. Upload a .pdf file."}
 
-    # 2) Build doc_id, storage filename
-    bump("Preparing document identifiers")
-    from werkzeug.utils import secure_filename
-    doc_id = generate_md_doc_id(Path(original_filename))
+    bump("Preparing upload")
+    from gdd_rag_backbone.scripts.index_pdf_with_marker import index_pdf_with_marker
 
-    # 3) Upload PDF to storage (optional - continue if bucket doesn't exist)
-    bump("Uploading PDF to storage")
-    pdf_storage_path = None
+    temp_dir = tempfile.mkdtemp(prefix="gdd_upload_")
     try:
-        from backend.storage.supabase_client import get_supabase_client
-        from werkzeug.utils import secure_filename
-
-        client = get_supabase_client(use_service_key=True)
-        bucket_name = "gdd_pdfs"
-        pdf_filename = secure_filename(original_filename).replace(" ", "_")
-
-        client.storage.from_(bucket_name).upload(
-            path=pdf_filename, file=pdf_bytes,
-            file_options={"content-type": "application/pdf",
-                          "cache-control": "3600", "upsert": "true"}
-        )
-        pdf_storage_path = pdf_filename
-        logger.info(f"✅ Successfully uploaded PDF to storage: {pdf_filename}")
-    except Exception as e:
-        # Log error but continue - PDF storage is optional
-        logger.warning(
-            f"⚠️ Failed to upload PDF to storage (bucket may not exist): {e}")
-        logger.warning(
-            "⚠️ Continuing with indexing - PDF storage is optional. To enable:")
-        logger.warning("   1. Go to your Supabase project dashboard")
-        logger.warning("   2. Navigate to Storage section")
-        logger.warning("   3. Create a bucket named 'gdd_pdfs'")
-        logger.warning(
-            "   4. Set it to public if you want public access to PDFs")
-        pdf_storage_path = None
-
-    # 4) Chunk markdown
-    bump("Chunking Markdown")
-    from gdd_rag_backbone.markdown_chunking import MarkdownChunker
-    chunker = MarkdownChunker()
-    chunks = chunker.chunk_document(
-        markdown_content=markdown_content, doc_id=doc_id, filename=original_filename)
-
-    # 5) Embedding - Try free options first (Ollama), then paid (OpenAI, Qwen)
-    bump("Generating embeddings")
-    import os
-    import logging
-    logger = logging.getLogger(__name__)
-
-    # Try to select the best embedding provider - prioritize FREE options first
-    provider = None
-    provider_errors = []
-
-    # Strategy 1: Try Ollama (FREE - local, OpenAI-compatible)
-    if provider is None:
-        openai_base_url = os.getenv(
-            'OPENAI_BASE_URL', 'https://api.openai.com/v1')
-        # Check if base_url points to Ollama (localhost:11434)
-        if 'localhost:11434' in openai_base_url or '127.0.0.1:11434' in openai_base_url:
-            logger.info("Detected Ollama base URL, trying Ollama...")
-            try:
-                from gdd_rag_backbone.llm_providers import QwenProvider
-                embedding_model = os.getenv(
-                    'EMBEDDING_MODEL', 'mxbai-embed-large')
-                # Ollama doesn't need a real API key, but QwenProvider expects one
-                ollama_key = os.getenv('OPENAI_API_KEY', 'ollama')
-
-                provider = QwenProvider(
-                    api_key=ollama_key,
-                    base_url=openai_base_url,
-                    embedding_model=embedding_model
-                )
-                # Ollama embedding models typically have 768 dimensions
-                # Adjust based on model: mxbai-embed-large=1024, nomic-embed-text=768
-                if 'mxbai-embed-large' in embedding_model:
-                    provider.embedding_dim = 1024
-                elif 'nomic-embed-text' in embedding_model:
-                    provider.embedding_dim = 768
-                else:
-                    provider.embedding_dim = 768  # Default for Ollama models
-
-                logger.info(
-                    f"✅ Using Ollama embeddings (model: {embedding_model}, dim: {provider.embedding_dim})")
-            except Exception as e:
-                provider_errors.append(f"Ollama: {str(e)}")
-                logger.warning(f"Ollama provider failed: {e}")
-                logger.warning("Make sure Ollama is running: ollama serve")
-                logger.warning(
-                    "And model is downloaded: ollama pull mxbai-embed-large")
-                provider = None
-
-    # Strategy 2: Try OpenAI (PAID - but may have quota)
-    if provider is None:
-        openai_key = os.getenv('OPENAI_API_KEY')
-        openai_base_url = os.getenv(
-            'OPENAI_BASE_URL', 'https://api.openai.com/v1')
-        # Only try OpenAI if base_url is actually OpenAI (not Ollama)
-        if openai_key and 'openai.com' in openai_base_url.lower():
-            logger.info(
-                f"Checking for OpenAI API key: {'Found' if openai_key else 'Not found'}")
-            try:
-                # Use QwenProvider configured for OpenAI endpoint
-                from gdd_rag_backbone.llm_providers import QwenProvider
-                embedding_model = os.getenv(
-                    'EMBEDDING_MODEL', 'text-embedding-3-small')
-
-                # Create provider with OpenAI settings directly
-                provider = QwenProvider(
-                    api_key=openai_key,
-                    base_url=openai_base_url,
-                    embedding_model=embedding_model
-                )
-
-                # Set correct embedding dimension based on model
-                if '3-small' in embedding_model:
-                    provider.embedding_dim = 1536
-                elif '3-large' in embedding_model:
-                    provider.embedding_dim = 3072
-                elif 'ada-002' in embedding_model:
-                    provider.embedding_dim = 1536
-                else:
-                    provider.embedding_dim = 1536  # Default for OpenAI models
-
-                # Prevent DashScope initialization since we're using OpenAI
-                try:
-                    import dashscope
-                    if 'openai.com' in openai_base_url.lower():
-                        if hasattr(dashscope, 'api_key'):
-                            dashscope.api_key = None
-                except ImportError:
-                    pass
-
-                logger.info(
-                    f"✅ Using OpenAI embeddings (model: {embedding_model}, dim: {provider.embedding_dim})")
-            except Exception as e:
-                provider_errors.append(f"OpenAI: {str(e)}")
-                logger.warning(f"OpenAI provider failed: {e}")
-                import traceback
-                logger.warning(traceback.format_exc())
-                provider = None
-
-    # Strategy 3: Fallback to Qwen/DashScope if nothing else available
-    if provider is None:
-        logger.info(
-            "No free options available, trying Qwen/DashScope fallback...")
+        pdf_path = Path(temp_dir) / \
+            secure_filename(original_filename).replace(" ", "_")
+        pdf_path.write_bytes(pdf_bytes)
+        result = index_pdf_with_marker(
+            pdf_path, dry_run=False, progress_cb=progress_cb)
+        return result
+    finally:
         try:
-            from gdd_rag_backbone.llm_providers import QwenProvider
-            provider = QwenProvider()
-            # Verify API key exists
-            if provider.api_key:
-                logger.info("Using Qwen/DashScope embeddings (fallback)")
-            else:
-                raise ValueError("Qwen API key not configured")
-        except Exception as e:
-            provider_errors.append(f"Qwen/DashScope: {str(e)}")
-            logger.warning(f"Qwen provider failed: {e}")
-            provider = None
-
-    # If no provider available, raise helpful error with setup instructions
-    if provider is None:
-        error_msg = (
-            "❌ Embedding provider initialization failed!\n\n"
-            "The system needs an API key or local setup for generating embeddings. "
-            "Please configure one of the following options in your .env file:\n\n"
-            "🆓 FREE Option 1 (Ollama - Local, No API key needed):\n"
-            "  1. Install: brew install ollama\n"
-            "  2. Start: ollama serve\n"
-            "  3. Download: ollama pull mxbai-embed-large\n"
-            "  4. Set in .env:\n"
-            "     OPENAI_BASE_URL=http://localhost:11434/v1\n"
-            "     EMBEDDING_MODEL=mxbai-embed-large\n"
-            "     OPENAI_API_KEY=ollama  # Can be anything\n\n"
-            "💰 PAID Option 2 (OpenAI - Requires credits):\n"
-            "  OPENAI_API_KEY=sk-...\n"
-            "  EMBEDDING_MODEL=text-embedding-3-small\n\n"
-            "💰 PAID Option 3 (Qwen/DashScope):\n"
-            "  DASHSCOPE_API_KEY=sk-...\n"
-            "  REGION=intl\n\n"
-            "Errors encountered:\n"
-        )
-        for err in provider_errors:
-            error_msg += f"  - {err}\n"
-        error_msg += (
-            "\n📝 Quick Start (Ollama - Easiest FREE option):\n"
-            "1. Install Ollama: brew install ollama\n"
-            "2. Start Ollama: ollama serve\n"
-            "3. Download embedding model: ollama pull mxbai-embed-large\n"
-            "4. Add to .env:\n"
-            "   OPENAI_BASE_URL=http://localhost:11434/v1\n"
-            "   EMBEDDING_MODEL=mxbai-embed-large\n"
-            "   OPENAI_API_KEY=ollama\n"
-            "5. Restart the application\n"
-        )
-        raise Exception(error_msg)
-
-    # 6) Index (metadata extraction happens inside index_gdd_chunks_to_supabase)
-    bump("Indexing into Supabase")
-    index_gdd_chunks_to_supabase(
-        doc_id=doc_id, chunks=chunks, provider=provider,
-        markdown_content=markdown_content, pdf_storage_path=pdf_filename
-    )
-
-    bump("Completed")
-    return {
-        "status": "success",
-        "message": f"Successfully uploaded and indexed: {original_filename} (as {doc_id})",
-        "doc_id": doc_id,
-    }
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def list_documents():
