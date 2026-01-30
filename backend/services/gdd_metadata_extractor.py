@@ -10,8 +10,7 @@ from typing import Dict, Optional, List, Any
 def extract_metadata_from_version_table(text: str) -> Dict[str, Optional[str]]:
     """
     Extract version and author from version history table.
-    Looks for tables with headers like "Phiên bản", "Ngày", "Mô tả", "Người viết"
-    and extracts the latest version and author from the bottom row.
+    Handles standard markdown tables and split-header tables (common in Marker output).
     
     Args:
         text: The chunk content text
@@ -27,237 +26,178 @@ def extract_metadata_from_version_table(text: str) -> Dict[str, Optional[str]]:
     
     if not text:
         return metadata
+
+    # 1. Find the table start
+    # Look for a line containing "Phiên" and "bản" (possibly split) or "Version"
+    # Or just look for the first markdown table
+    lines = text.split('\n')
+    table_lines = []
+    in_table = False
     
-    # Pattern to detect version history table header
-    # Look for "Phiên bản" (version) and "Người viết" (author) in the same line/area
-    # This could be in markdown table format or plain text format
+    # Heuristic: Find a block of lines starting/ending with |
+    current_block = []
+    blocks = []
     
-    # Try markdown table format first
-    # Pattern: | Phiên bản | Ngày | Mô tả | Người viết | ...
-    # More flexible: just check if header contains both "Phiên bản" and "Người viết"
-    markdown_table_pattern = r'\|.*?Phiên\s*bản.*?Người\s*viết.*?\|'
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('|') and stripped.endswith('|'):
+            current_block.append(stripped)
+        else:
+            if current_block:
+                blocks.append(current_block)
+                current_block = []
+    if current_block:
+        blocks.append(current_block)
     
-    # Try plain text table format (tab or space separated)
-    # Pattern: Phiên bản Ngày Mô tả Người viết
-    # More flexible: allow header to span multiple lines
-    plain_table_header_pattern = r'Phiên\s*bản.*?Ngày.*?Người\s*viết'
+    # Analyze each block to see if it's a version table
+    target_block = None
+    for block in blocks:
+        # Check if this block looks like a version table
+        # Combine first 3 reviews to check for keywords
+        header_text = " ".join(block[:3]).lower()
+        if ("phiên" in header_text and "bản" in header_text) or \
+           ("version" in header_text) or \
+           ("người" in header_text and "viết" in header_text) or \
+           ("author" in header_text):
+            target_block = block
+            break
+            
+    if not target_block:
+        return metadata
+
+    # 2. Parse the table
+    # We need to identify columns. 
+    # Since headers might be split across rows (Row 1: Phiên, Row 3: bản), we need to merge headers.
     
-    # Check if we have a version history table
-    has_table = False
-    table_start = -1
+    # Split each row into cells
+    rows_cells = []
+    for row in target_block:
+        # Remove outer | and split by |
+        # Handle escaped \| if necessary, but simple split usually works for this data
+        cells = [c.strip() for c in row.strip('|').split('|')]
+        rows_cells.append(cells)
     
-    # Try markdown table
-    markdown_match = re.search(markdown_table_pattern, text, re.IGNORECASE | re.DOTALL)
-    if markdown_match:
-        has_table = True
-        table_start = markdown_match.start()
-        # Extract table rows
-        # Find all rows after the header
-        table_section = text[table_start:]
-        # Match markdown table rows: each line that starts and ends with |
-        # Split by newlines and filter for table rows
-        lines = table_section.split('\n')
-        rows = []
-        for line in lines:
-            line = line.strip()
-            if line.startswith('|') and line.endswith('|'):
-                # Skip separator rows (|---|---|)
-                if not re.match(r'^\|\s*[-:]+\s*\|', line):
-                    rows.append(line)
-                # Stop if we hit a non-table line after finding rows
-            elif rows and line and not line.startswith('|'):
-                break
+    if not rows_cells:
+        return metadata
         
-        if len(rows) > 1:  # Header + at least one data row
-            # Get the last row (latest version)
-            last_row = rows[-1]
-            # Extract version (first column after |)
-            version_match = re.search(r'\|\s*(v?\d+\.?\d*(?:\.\d+)?)\s*\|', last_row, re.IGNORECASE)
-            if version_match:
-                metadata['version'] = version_match.group(1).strip()
-            
-            # Extract author (column with "Người viết" header)
-            # Find column index of "Người viết" from header
-            header_row = rows[0]
-            header_cols = [col.strip() for col in header_row.split('|')[1:-1]]  # Remove first/last empty
-            author_col_idx = None
-            for idx, col in enumerate(header_cols):
-                if re.search(r'Người\s*viết', col, re.IGNORECASE):
-                    author_col_idx = idx
-                    break
-            
-            if author_col_idx is not None:
-                last_row_cols = [col.strip() for col in last_row.split('|')[1:-1]]
-                if len(last_row_cols) > author_col_idx:
-                    author_text = last_row_cols[author_col_idx]
-                    # Extract username from author text
-                    author_match = re.search(r'\b([a-zA-Z0-9_]{3,30})\b', author_text)
-                    if author_match:
-                        metadata['author'] = author_match.group(1).strip()
-            
-            # Extract date (column with "Ngày" header)
-            date_col_idx = None
-            for idx, col in enumerate(header_cols):
-                if re.search(r'Ngày', col, re.IGNORECASE):
-                    date_col_idx = idx
-                    break
-            
-            if date_col_idx is not None:
-                last_row_cols = [col.strip() for col in last_row.split('|')[1:-1]]
-                if len(last_row_cols) > date_col_idx:
-                    date_text = last_row_cols[date_col_idx]
-                    # Extract date in format DD-MM-YYYY or DD/MM/YYYY
-                    date_match = re.search(r'(\d{1,2}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{4})', date_text)
-                    if date_match:
-                        date_text = date_match.group(1).strip()
-                        date_text = re.sub(r'\s+', ' ', date_text)
-                        metadata['date'] = date_text
+    # Determine max columns
+    max_cols = max(len(r) for r in rows_cells)
     
-    # Try plain text table format if markdown table not found
-    if not has_table:
-        # Try to find version history table header (may span multiple lines)
-        # Look for "Phiên bản" followed by "Người viết" within reasonable distance
-        plain_match = re.search(plain_table_header_pattern, text, re.IGNORECASE | re.DOTALL)
-        if plain_match:
-            has_table = True
-            table_start = plain_match.start()
-            
-            # Extract the table section (first 2000 chars should be enough for version table)
-            table_section = text[table_start:table_start + 2000]
-            # Split into lines
-            lines = table_section.split('\n')
-            
-            # Find data rows - rows might span multiple lines
-            # Look for lines that start with version pattern, then collect following lines
-            # until we hit another version pattern or end of table
-            data_rows = []
-            current_row_lines = []
-            
-            for i, line in enumerate(lines):
-                line_stripped = line.strip()
-                if not line_stripped:
-                    # Empty line might be part of a multi-line row, continue collecting
-                    if current_row_lines:
-                        current_row_lines.append(line)
-                    continue
-                
-                # Check if line starts with version pattern
-                version_match = re.match(r'^\s*(v?\d+\.?\d*(?:\.\d+)?)', line_stripped, re.IGNORECASE)
-                if version_match:
-                    # If we have a previous row being collected, save it
-                    if current_row_lines:
-                        data_rows.append('\n'.join(current_row_lines))
-                    # Start new row
-                    current_row_lines = [line]
-                elif current_row_lines:
-                    # Check if this line looks like it belongs to the current row
-                    # (contains date pattern, author pattern, or is continuation of description)
-                    has_date = re.search(r'\d{1,2}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{4}', line_stripped)
-                    has_author = re.search(r'\b([a-zA-Z0-9_]{3,30})\b', line_stripped)
-                    # If line has date or author, or is short (likely continuation), add to current row
-                    if has_date or has_author or len(line_stripped) < 50:
-                        current_row_lines.append(line)
-                    else:
-                        # This looks like a new section, save current row and stop
-                        if current_row_lines:
-                            data_rows.append('\n'.join(current_row_lines))
-                        current_row_lines = []
-                        # Check if we've moved past the table (hit a section header or long text)
-                        if len(line_stripped) > 50 and not re.search(r'^\d+\.', line_stripped):
-                            break
-            
-            # Don't forget the last row
-            if current_row_lines:
-                data_rows.append('\n'.join(current_row_lines))
-            
-            if data_rows:
-                # Extract all versions and find the latest one
-                # Sometimes rows might be out of order, so we'll extract all and pick the highest version
-                all_versions = []
-                for row in data_rows:
-                    row_text = row.replace('\n', ' ').strip()
-                    version_match = re.search(r'\b(v?\d+\.?\d*(?:\.\d+)?)\b', row_text, re.IGNORECASE)
-                    if version_match:
-                        version_str = version_match.group(1).strip()
-                        # Parse version number for comparison
-                        version_num = version_str.lstrip('vV')
-                        try:
-                            # Try to parse as float for comparison
-                            version_float = float(version_num)
-                            all_versions.append((version_float, version_str, row_text))
-                        except ValueError:
-                            # If can't parse, just use the last one found
-                            all_versions.append((0, version_str, row_text))
-                
-                # Initialize last_row
-                last_row = None
-                if all_versions:
-                    # Sort by version number (descending) and get the latest
-                    all_versions.sort(key=lambda x: x[0], reverse=True)
-                    latest_version_str = all_versions[0][1]
-                    last_row = all_versions[0][2]  # Use the row with the latest version
-                    metadata['version'] = latest_version_str
-                    
-                    # Debug logging
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.debug(f"[Version Extraction] Found {len(all_versions)} versions: {[v[1] for v in all_versions]}, selected latest: {latest_version_str}")
-                
-                # Fallback: if no versions found or last_row not set, use the last row
-                if not last_row:
-                    last_row = data_rows[-1].replace('\n', ' ').strip()
-                    # Extract version (first token) if not already extracted
-                    if not metadata['version']:
-                        version_match = re.match(r'^\s*(v?\d+\.?\d*(?:\.\d+)?)', last_row, re.IGNORECASE)
-                        if version_match:
-                            metadata['version'] = version_match.group(1).strip()
-                
-                # Try to parse as tab-separated or space-separated columns
-                # Split by tabs first, then by multiple spaces
-                if '\t' in last_row:
-                    cols = [col.strip() for col in last_row.split('\t')]
-                else:
-                    # Split by 2+ spaces (table-like spacing)
-                    cols = re.split(r'\s{2,}', last_row.strip())
-                
-                # If we have columns, try to identify them
-                if len(cols) >= 3:
-                    # Column 0: version (already extracted)
-                    # Column 1: date
-                    if len(cols) > 1:
-                        date_match = re.search(r'(\d{1,2}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{4})', cols[1])
-                        if date_match:
-                            date_text = date_match.group(1).strip()
-                            date_text = re.sub(r'\s+', ' ', date_text)
-                            metadata['date'] = date_text
-                    
-                    # Last column: author (typically)
-                    if len(cols) > 2:
-                        author_col = cols[-1].strip()
-                        # Extract username from author column
-                        author_match = re.search(r'\b([a-zA-Z0-9_]{3,30})\b', author_col)
-                        if author_match:
-                            metadata['author'] = author_match.group(1).strip()
-                else:
-                    # Fallback: extract date and author using regex patterns
-                    date_match = re.search(r'(\d{1,2}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{4})', last_row)
-                    if date_match:
-                        date_text = date_match.group(1).strip()
-                        date_text = re.sub(r'\s+', ' ', date_text)
-                        metadata['date'] = date_text
-                    
-                    # Extract author (last username-like token in the row)
-                    username_matches = re.findall(r'\b([a-zA-Z0-9_]{3,30})\b', last_row)
-                    if username_matches:
-                        # The last username-like token is likely the author
-                        # Skip common words that might appear
-                        skip_words = {'file', 'tạo', 'hoàn', 'thành', 'mô', 'tả', 'người', 'review', 'viết'}
-                        for username in reversed(username_matches):
-                            if username.lower() not in skip_words:
-                                metadata['author'] = username.strip()
-                                break
+    # Build "Header" by combining text from matching columns in the top rows
+    # We stop when we hit a row that looks like data (starts with v\d or date)
+    # OR we just treat the first non-separator rows as headers
     
+    data_start_idx = 0
+    header_col_text = [""] * max_cols
+    
+    for i, cells in enumerate(rows_cells):
+        is_separator = all(set(c) <= {'-', ':'} and len(c) > 0 for c in cells if c)
+        if is_separator:
+            continue
+            
+        # Check if this row looks like data (e.g. "v1.0", date)
+        row_text = "".join(cells).lower()
+        is_data = False
+        
+        # Check first column for version pattern (v0.1, 1.0)
+        if cells and re.match(r'^v?\d+\.\d+', cells[0], re.IGNORECASE):
+            is_data = True
+            
+        if is_data:
+            data_start_idx = i
+            break
+            
+        # Accumulate header text
+        for j, cell in enumerate(cells):
+            if j < max_cols:
+                header_col_text[j] += " " + cell.lower()
+    
+    # Clean header text
+    header_col_text = [h.strip() for h in header_col_text]
+    
+    # Identify column indices
+    version_idx = -1
+    date_idx = -1
+    author_idx = -1
+    
+    for i, header in enumerate(header_col_text):
+        if ("phiên" in header and "bản" in header) or "version" in header:
+            version_idx = i
+        elif "ngày" in header or "date" in header:
+            date_idx = i
+        elif ("người" in header and "viết" in header) or "author" in header or "người tạo" in header:
+            author_idx = i
+            
+    # Default to col 0 for version if not found but table looks valid
+    if version_idx == -1 and (date_idx != -1 or author_idx != -1):
+        version_idx = 0
+        
+    # 3. Extract data from the last row (or highest version)
+    # Filter only data rows
+    data_rows = rows_cells[data_start_idx:]
+    
+    valid_versions = []
+    for row in data_rows:
+        if not row: continue
+        
+        # Extract Version
+        ver = None
+        if version_idx != -1 and version_idx < len(row):
+            v_text = row[version_idx]
+            # Clean up: remove <br>, newlines
+            v_text = re.sub(r'<br\s*/?>', ' ', v_text, flags=re.IGNORECASE)
+            v_text = v_text.strip()
+            match = re.search(r'(v?\d+\.?\d*(?:\.\d+)?)', v_text, re.IGNORECASE)
+            if match:
+                ver = match.group(1)
+        
+        if ver:
+            # Extract Date
+            date_val = None
+            if date_idx != -1 and date_idx < len(row):
+                d_text = row[date_idx]
+                d_text = re.sub(r'<br\s*/?>', '', d_text, flags=re.IGNORECASE)
+                d_text = re.sub(r'\s+', '', d_text) # Remove spaces to join split date parts
+                # Match DD-MM-YYYY
+                d_match = re.search(r'(\d{1,2}[-/\.]\d{1,2}[-/\.]\d{4})', d_text)
+                if d_match:
+                    date_val = d_match.group(1).replace('.', '-')
+            
+            # Extract Author
+            auth_val = None
+            if author_idx != -1 and author_idx < len(row):
+                a_text = row[author_idx]
+                a_text = re.sub(r'<br\s*/?>', ' ', a_text, flags=re.IGNORECASE)
+                a_text = a_text.replace('\n', ' ').strip()
+                # Extract simple username
+                a_match = re.search(r'([a-zA-Z0-9_]{3,30})', a_text)
+                if a_match and a_match.group(1).lower() not in ['file', 'tạo']:
+                    auth_val = a_match.group(1)
+            
+            # Store found data
+            # Version parsing for sorting
+            try:
+                ver_num = float(re.sub(r'[^\d.]', '', ver))
+            except:
+                ver_num = 0.0
+                
+            valid_versions.append({
+                'version': ver,
+                'version_num': ver_num,
+                'date': date_val,
+                'author': auth_val
+            })
+            
+    if valid_versions:
+        # Sort by version number descending
+        valid_versions.sort(key=lambda x: x['version_num'], reverse=True)
+        latest = valid_versions[0]
+        metadata['version'] = latest['version']
+        metadata['author'] = latest['author']
+        metadata['date'] = latest['date']
+        
     return metadata
+
 
 
 def extract_metadata_from_text(text: str) -> Dict[str, Optional[str]]:
@@ -318,19 +258,17 @@ def extract_metadata_from_text(text: str) -> Dict[str, Optional[str]]:
                     metadata['version'] = version_str
                     break
     
-    # Pattern for Author: "Người viết:", "Người tạo:", "Người tạo file:", or "Người soạn:"
-    # Handle cases with/without spaces: "Người viết:" or "Ngườiviết:"
-    # Extract ALL authors from the content between author title and date title
-    # Handles list format: "- [x] phucth12\nthanhdv2\nlinhttd"
+    # Pattern for Author: Vietnamese + English
     author_patterns = [
-        # "Người soạn:" - capture everything until date title (with or without spaces)
+        # Vietnamese
         r'Người\s*soạn\s*:\s*([\s\S]*?)(?=\s*Ngày\s*(tạo|cập\s*nhật|khởi\s*tạo)|\s*\||\s*$)',
-        # "Người viết:" - capture everything until date title (with or without spaces)
         r'Người\s*viết\s*:\s*([\s\S]*?)(?=\s*Ngày\s*(tạo|cập\s*nhật|khởi\s*tạo)|\s*\||\s*$)',
-        # "Người tạo file:" - capture everything until date title
         r'Người\s*tạo\s*file\s*:\s*([\s\S]*?)(?=\s*Ngày\s*(tạo|cập\s*nhật|khởi\s*tạo)|\s*\||\s*$)',
-        # "Người tạo:" - capture everything until date title
         r'Người\s*tạo\s*:\s*([\s\S]*?)(?=\s*Ngày\s*(tạo|cập\s*nhật|khởi\s*tạo)|\s*\||\s*$)',
+        # English: Author:, Written by:, Created by:
+        r'Author\s*:\s*([\s\S]*?)(?=\s*Date\s*(:|\s)|\s*\n\n|\s*\||\s*$)',
+        r'Written\s+by\s*:\s*([\s\S]*?)(?=\s*Date\s*(:|\s)|\s*\n\n|\s*\||\s*$)',
+        r'Created\s+by\s*:\s*([\s\S]*?)(?=\s*Date\s*(:|\s)|\s*\n\n|\s*\||\s*$)',
     ]
     
     for pattern in author_patterns:
@@ -394,11 +332,14 @@ def extract_metadata_from_text(text: str) -> Dict[str, Optional[str]]:
                 metadata['author'] = ', '.join(authors)
                 break
     
-    # Pattern for Date: "Ngày tạo:", "Ngày tạo file:", "Ngày cập nhật:", or "Ngày khởi tạo:"
-    # Handle cases with/without spaces: "Ngày tạo:" or "Ngàytạo:"
-    # Handle newlines between label and colon: "Ngàytạo\n\n:07-09-2025"
+    # Pattern for Date: Vietnamese + English
     date_patterns = [
-        # "Ngày khởi tạo:" - with or without spaces, handle "21 - 08 - 2025" format
+        # English: Date:, Created:, Updated:
+        r'Date\s*:\s*(\d{1,2}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{4})',
+        r'Date\s*:\s*(\d{4}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{1,2})',
+        r'Created\s*:\s*(\d{1,2}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{4})',
+        r'Updated\s*:\s*(\d{1,2}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{4})',
+        # Vietnamese
         r'Ngày\s*khởi\s*tạo\s*:\s*(\d{1,2}\s*-\s*\d{1,2}\s*-\s*\d{4})',
         # "Ngày tạo:" - with or without spaces, handle "09-09-2025" format
         r'Ngày\s*tạo\s*:\s*(\d{1,2}\s*-\s*\d{1,2}\s*-\s*\d{4})',
