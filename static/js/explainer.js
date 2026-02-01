@@ -657,11 +657,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
                 const result = await response.json();
 
-                // Capture translation_info from the original keyword search (first in loop)
-                if (result.translation_info && !translationInfo && kw === keyword) {
+                // Capture translation_info: when alias was found use parent keyword's response (labels show parent + its translation)
+                const captureForThisKw = foundAliasKW ? kw === foundAliasKW.name : kw === keyword;
+                if (result.translation_info && !translationInfo && captureForThisKw) {
                     translationInfo = result.translation_info;
+                    // When user searched by alias, EN filter must match alias OR parent keyword
+                    translationInfo.effectiveOriginals = searchKeywords.map(k => k.toLowerCase());
 
-                    // Update labels immediately after capturing translation info
+                    // Update labels: parent keyword and its translation (not the alias)
                     if (translationInfo.original) {
                         queryLabelEn.textContent = translationInfo.original;
                     }
@@ -2914,6 +2917,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const originalKeyword = translationInfo.original?.toLowerCase() || '';
         const translatedKeyword = translationInfo.translation?.toLowerCase() || '';
+        const effectiveOriginals = Array.isArray(translationInfo.effectiveOriginals) && translationInfo.effectiveOriginals.length > 0
+            ? translationInfo.effectiveOriginals
+            : [originalKeyword].filter(Boolean);
 
         // Filter results based on matching keywords
         const allRows = explainerResultsCheckboxes.querySelectorAll('.section-row');
@@ -2936,9 +2942,9 @@ document.addEventListener('DOMContentLoaded', function () {
             let shouldShow = false;
 
             if (matchingKeywords.length > 0) {
-                // Check if chunk contains original keyword
+                // Check if chunk matches any "original" term (alias + parent keyword when searched by alias)
                 const hasOriginal = matchingKeywords.some(kw =>
-                    kw.toLowerCase() === originalKeyword
+                    effectiveOriginals.includes(kw.toLowerCase())
                 );
 
                 // Check if chunk contains translated keyword
