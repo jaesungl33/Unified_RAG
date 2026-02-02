@@ -13,7 +13,19 @@ document.addEventListener('DOMContentLoaded', function() {
     const closePreviewBtn = document.getElementById('close-preview');
     const dropzone = document.getElementById('gdd-dropzone');
     const selectedDocHint = document.getElementById('selected-doc-hint');
-    
+    const documentViewerSidebar = document.getElementById('gdd-document-viewer-sidebar');
+    const documentViewerDocName = document.getElementById('gdd-document-viewer-doc-name');
+    const documentViewerContent = document.getElementById('gdd-document-viewer-content');
+    const closeDocumentViewerBtn = document.getElementById('gdd-close-document-viewer-btn');
+    const gddOpenOriginalBtn = document.getElementById('gdd-open-original-btn');
+    const gddDownloadBtn = document.getElementById('gdd-download-btn');
+    const documentViewerResizeHandle = document.getElementById('gdd-document-viewer-resize-handle');
+
+    const DOC_VIEWER_MIN_WIDTH = 384;  // Same as right preview panel
+    const DOC_VIEWER_DEFAULT_WIDTH = 600;
+    const DOC_VIEWER_MAX_WIDTH_RATIO = 0.9;
+
+    let currentPreviewDoc = null; // Document currently shown in right preview panel (for Open Original)
     let selectedDocument = null; // Track selected document
     let selectedDocId = null; // Track selected document ID
     let allDocumentsData = null; // Store all documents data for filtering
@@ -55,6 +67,89 @@ document.addEventListener('DOMContentLoaded', function() {
     if (closePreviewBtn) {
         closePreviewBtn.addEventListener('click', () => {
             previewPanel.classList.remove('open');
+        });
+    }
+
+    // Open Original: close preview panel, open document viewer sidebar (same as Keyword Finder View Doc)
+    if (gddOpenOriginalBtn) {
+        gddOpenOriginalBtn.addEventListener('click', () => {
+            if (currentPreviewDoc) openDocumentViewer();
+        });
+    }
+
+    // Download: open PDF URL in new tab (Option A; browser may prompt to save or display)
+    if (gddDownloadBtn) {
+        gddDownloadBtn.addEventListener('click', async () => {
+            if (!currentPreviewDoc) return;
+            try {
+                const response = await fetch('/api/gdd/explainer/get-pdf-url', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ doc_id: currentPreviewDoc.doc_id })
+                });
+                const result = await response.json();
+                if (result.success && result.pdf_url) {
+                    window.open(result.pdf_url, '_blank');
+                } else {
+                    alert(result.error || 'No PDF found for this document.');
+                }
+            } catch (e) {
+                console.error('Download failed:', e);
+                alert('Download failed: ' + (e.message || 'Unknown error'));
+            }
+        });
+    }
+
+    if (closeDocumentViewerBtn) {
+        closeDocumentViewerBtn.addEventListener('click', closeDocumentViewer);
+    }
+
+    // Document viewer resize: only while handle is pressed and dragged; pointer capture so release always stops
+    if (documentViewerResizeHandle && documentViewerSidebar) {
+        documentViewerResizeHandle.addEventListener('pointerdown', function (e) {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            const pointerId = e.pointerId;
+            const startX = e.clientX;
+            const startWidth = documentViewerSidebar.offsetWidth;
+            const maxW = Math.min(1200, Math.floor(window.innerWidth * DOC_VIEWER_MAX_WIDTH_RATIO));
+            let lastClientX = startX;
+            let rafId = null;
+
+            function applyWidth() {
+                rafId = null;
+                const delta = startX - lastClientX;
+                let newWidth = Math.max(DOC_VIEWER_MIN_WIDTH, Math.min(maxW, startWidth + delta));
+                documentViewerSidebar.style.transition = 'none';
+                documentViewerSidebar.style.width = newWidth + 'px';
+            }
+
+            function onMove(ev) {
+                if (ev.pointerId !== pointerId) return;
+                ev.preventDefault();
+                lastClientX = ev.clientX;
+                if (rafId == null) rafId = requestAnimationFrame(applyWidth);
+            }
+
+            function onUp(ev) {
+                if (ev.pointerId !== pointerId) return;
+                ev.preventDefault();
+                if (rafId != null) cancelAnimationFrame(rafId);
+                documentViewerResizeHandle.removeEventListener('pointermove', onMove);
+                documentViewerResizeHandle.removeEventListener('pointerup', onUp);
+                documentViewerResizeHandle.removeEventListener('pointercancel', onUp);
+                documentViewerResizeHandle.releasePointerCapture(pointerId);
+                documentViewerSidebar.style.transition = '';
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            documentViewerResizeHandle.setPointerCapture(pointerId);
+            documentViewerResizeHandle.addEventListener('pointermove', onMove);
+            documentViewerResizeHandle.addEventListener('pointerup', onUp);
+            documentViewerResizeHandle.addEventListener('pointercancel', onUp);
         });
     }
 
@@ -646,7 +741,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function openPreview(doc) {
         if (!previewPanel) return;
-        
+
+        currentPreviewDoc = doc;
+
         const filename = document.getElementById('preview-filename');
         const chunks = document.getElementById('meta-chunks');
         const content = document.getElementById('preview-content');
@@ -665,13 +762,90 @@ document.addEventListener('DOMContentLoaded', function() {
                     content.innerHTML = data.sections.map(s => 
                         `<div style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border);">
                             <div style="font-weight: 600; margin-bottom: 4px;">${s.section_name || 'Section'}</div>
-                            <div style="opacity: 0.8; font-size: 0.7rem;">Path: ${s.section_path || '/'}</div>
                         </div>`
                     ).join('');
                 } else {
                     content.textContent = 'No preview content available for this document.';
                 }
             });
+    }
+
+    async function openDocumentViewer() {
+        if (!documentViewerSidebar || !currentPreviewDoc) return;
+
+        const docId = currentPreviewDoc.doc_id;
+        const docName = currentPreviewDoc.name || docId;
+
+        // Document viewer opens on top of the right preview panel (preview panel stays open)
+        if (documentViewerDocName) documentViewerDocName.textContent = docName;
+
+        const content = documentViewerContent;
+        if (content) {
+            content.style.display = 'flex';
+            content.style.alignItems = 'center';
+            content.style.justifyContent = 'center';
+            content.innerHTML = `
+                <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px; gap: 12px;">
+                    <div class="spinner" style="width: 24px; height: 24px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+                    <p style="font-size: 0.875rem; color: var(--muted-foreground); margin: 0;">Loading document...</p>
+                </div>
+            `;
+        }
+
+        documentViewerSidebar.style.transform = 'translateX(0)';
+
+        try {
+            const response = await fetch('/api/gdd/explainer/get-pdf-url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ doc_id: docId })
+            });
+            const result = await response.json();
+
+            if (result.success && result.pdf_url) {
+                const pdfUrlWithParams = result.pdf_url.includes('#')
+                    ? result.pdf_url.replace(/#.*$/, '') + '#toolbar=0&navpanes=0'
+                    : result.pdf_url + '#toolbar=0&navpanes=0';
+                if (content) {
+                    content.style.display = 'block';
+                    content.style.alignItems = 'stretch';
+                    content.style.justifyContent = 'stretch';
+                    content.innerHTML = `
+                        <iframe src="${pdfUrlWithParams}" width="100%" height="100%" style="border: none; display: block; flex: 1; min-height: 0;"></iframe>
+                    `;
+                }
+            } else {
+                if (content) {
+                    content.style.display = 'flex';
+                    content.style.alignItems = 'center';
+                    content.style.justifyContent = 'center';
+                    content.innerHTML = `
+                        <div class="placeholder-text" style="text-align: center; padding: 32px;">
+                            <p style="color: var(--status-error); margin-bottom: 12px;">No PDF found for this document.</p>
+                            <p style="color: var(--muted-foreground); font-size: 0.875rem;">${result.error || 'The document PDF is not available in Supabase Storage.'}</p>
+                        </div>
+                    `;
+                }
+            }
+        } catch (error) {
+            console.error('Error fetching document PDF:', error);
+            if (content) {
+                content.style.display = 'flex';
+                content.style.alignItems = 'center';
+                content.style.justifyContent = 'center';
+                content.innerHTML = `
+                    <div class="placeholder-text" style="text-align: center; padding: 32px;">
+                        <p style="color: var(--status-error);">Error: ${error.message || 'Failed to load document'}</p>
+                    </div>
+                `;
+            }
+        }
+    }
+
+    function closeDocumentViewer() {
+        if (documentViewerSidebar) {
+            documentViewerSidebar.style.transform = 'translateX(100%)';
+        }
     }
     
     function syncSelectionFromInput() {

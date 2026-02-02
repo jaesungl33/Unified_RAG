@@ -158,14 +158,7 @@ class MarkdownChunker:
 
     def _split_by_subheaders(self, section: MarkdownSection) -> List[MarkdownSection]:
         """
-        Try to split section by sub-headers detected ONLY by numbered patterns.
-
-        A line is considered a header if, after stripping leading '#' and whitespace,
-        it matches this regex:
-
-            r'^\\d+\\.(?:\\d+(\\.\\d+)*)?\\s*[^\\W\\d_]'
-
-        i.e. it starts with a numbering like "1." or "4.1" or "4.1.2" (digit(s) then a dot) followed by text.
+        Try to split section by sub-headers (### or numbered).
 
         Args:
             section: Section to split
@@ -173,6 +166,7 @@ class MarkdownChunker:
         Returns:
             List of sub-sections, or [section] if no sub-headers found
         """
+        # Look for ### headers or numbered sections (4.1, 4.2, etc.)
         content = section.content
         lines = content.split('\n')
 
@@ -181,16 +175,14 @@ class MarkdownChunker:
         current_sub_header: Optional[str] = None
         line_start = section.line_start
 
-        header_pattern = re.compile(r'^\d+\.(?:\d+(\.\d+)*)?\s*[^\W\d_]')
-
         for i, line in enumerate(lines):
-            # Clean line: remove leading markdown header markers and whitespace
-            line_text_clean = line.lstrip('#').strip()
-            is_header = False
-            if header_pattern.match(line_text_clean):
-                is_header = True
+            # Check for ### header
+            h3_match = re.match(r'^###\s+(.+)$', line)
+            # Check for numbered section in header format
+            numbered_match = re.match(
+                r'^#{2,}\s+(\d+\.\d+[\.\d]*)\s+(.+)$', line)
 
-            if is_header:
+            if h3_match or numbered_match:
                 # Save previous sub-section
                 if current_sub_header is not None or current_sub_content:
                     sub_content = '\n'.join(current_sub_content).strip()
@@ -204,8 +196,11 @@ class MarkdownChunker:
                             parent_header=section.header
                         ))
 
-                # Start new sub-section; use the cleaned line as header text
-                current_sub_header = line_text_clean
+                # Start new sub-section
+                if h3_match:
+                    current_sub_header = h3_match.group(1).strip()
+                else:
+                    current_sub_header = numbered_match.group(2).strip()
                 current_sub_content = []
                 line_start = section.line_start + i
             else:

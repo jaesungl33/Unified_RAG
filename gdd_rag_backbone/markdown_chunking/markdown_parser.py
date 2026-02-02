@@ -12,7 +12,7 @@ from typing import List, Optional, Tuple
 @dataclass
 class MarkdownSection:
     """Represents a section in a markdown document."""
-    level: int  # Depth from numbering: 1 for "1", 2 for "4.1", 3 for "4.1.2", etc.
+    level: int  # Header level (1 for ##, 2 for ###, etc.)
     header: str  # Header text (without # symbols)
     content: str  # Section content (everything until next header)
     line_start: int  # Starting line number
@@ -24,10 +24,11 @@ class MarkdownParser:
     """Parser for markdown files to extract structure."""
 
     def __init__(self):
-        # Only numbered section headers like "1. Overview", "4.1 Components", "4.1.2 Tank Classes"
-        # (after stripping leading '#' and whitespace). Requires digit(s) then a dot. No ## / ### detection.
-        self.numbered_header_pattern = re.compile(
-            r'^\d+\.(?:\d+(\.\d+)*)?\s*[^\W\d_]')
+        # Pattern to match headers: ## Header or ### Header
+        self.header_pattern = re.compile(r'^(#{2,})\s+(.+)$', re.MULTILINE)
+        # Pattern to match numbered sections: 4.1, 5.2, etc.
+        self.numbered_section_pattern = re.compile(
+            r'^#{2,}\s+(\d+\.\d+[\.\d]*)\s+(.+)$', re.MULTILINE)
 
     def parse(self, markdown_content: str) -> List[MarkdownSection]:
         """
@@ -49,13 +50,10 @@ class MarkdownParser:
         parent_stack: List[Tuple[int, str]] = []
 
         for i, line in enumerate(lines):
-            # Normalized line text without leading '#' for numeric header detection
-            line_text_clean = line.lstrip('#').strip()
+            # Check if this line is a header
+            header_match = self.header_pattern.match(line)
 
-            # Only numbered lines are headers (e.g. "1 Overview", "4.1 Components")
-            numeric_match = self.numbered_header_pattern.match(line_text_clean)
-
-            if numeric_match:
+            if header_match:
                 # Save previous section if exists
                 if current_section is not None:
                     current_section.content = '\n'.join(
@@ -63,13 +61,9 @@ class MarkdownParser:
                     current_section.line_end = i - 1
                     sections.append(current_section)
 
-                # Derive level from number depth: "1" -> 1, "4.1" -> 2, "4.1.2" -> 3
-                num_part = line_text_clean.split(
-                )[0] if line_text_clean.split() else ""
-                header_level = 1 + \
-                    num_part.count(".") if num_part.replace(
-                        ".", "").isdigit() else 2
-                header_text = line_text_clean
+                # Extract header level and text
+                header_level = len(header_match.group(1))
+                header_text = header_match.group(2).strip()
 
                 # Update parent stack based on level
                 # Remove parents at same or deeper level
@@ -123,7 +117,7 @@ class MarkdownParser:
         """
         Extract document title from markdown.
 
-        Uses first numbered section header (e.g. "1 Overview") or "Untitled Document".
+        Looks for first ## header or uses filename.
 
         Args:
             markdown_content: Full markdown content
