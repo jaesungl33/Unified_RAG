@@ -792,7 +792,7 @@ document.addEventListener('DOMContentLoaded', function() {
             `;
         }
 
-        documentViewerSidebar.style.transform = 'translateX(0)';
+        documentViewerSidebar.style.width = DOC_VIEWER_DEFAULT_WIDTH + 'px';
 
         try {
             const response = await fetch('/api/gdd/explainer/get-pdf-url', {
@@ -844,7 +844,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function closeDocumentViewer() {
         if (documentViewerSidebar) {
-            documentViewerSidebar.style.transform = 'translateX(100%)';
+            documentViewerSidebar.style.width = '0px';
         }
     }
     
