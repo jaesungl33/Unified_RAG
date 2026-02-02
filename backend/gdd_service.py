@@ -709,9 +709,8 @@ def query_gdd_documents(query: str, selected_doc: str = None, language: str = No
         message_lower = query.lower().strip()
         extract_keywords = [
             "extract entire doc",
-            "extract entire document",
-            "extract all doc",
-            "extract all document",
+            "show doc",
+            "Hiển thị tài liệu",
         ]
         is_extract_request = any(
             kw in message_lower for kw in extract_keywords)
@@ -828,9 +827,8 @@ def query_gdd_documents(query: str, selected_doc: str = None, language: str = No
         message_lower = query.lower().strip()
         extract_keywords = [
             "extract entire doc",
-            "extract entire document",
-            "extract all doc",
-            "extract all document",
+            "show doc",
+            "Hiển thị tài liệu",
         ]
 
         is_extract_request = any(
